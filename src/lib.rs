@@ -32,6 +32,7 @@ mod styling;
 mod table_merge;
 mod template;
 mod text;
+mod unique_ids;
 mod xml;
 
 use std::borrow::Cow;
@@ -190,6 +191,7 @@ pub struct FillOptions {
     /// A bookmark prefix such as `tag_`. When rich text turns a tag's paragraph into several, and
     /// the tag's paragraph has a bookmark named this prefix and a number (`tag_3`), each later
     /// paragraph gets its own bookmark `tag_3_1`, `tag_3_2`, …, so a reader can find them all.
+    /// A loop's repeats of these bookmarks keep their names; only their ids change.
     pub continued_bookmarks: Option<String>,
 }
 
@@ -267,6 +269,7 @@ pub struct PackageTemplate {
     document: DocumentEdits,
     max_drawing_id: u32,
     max_bookmark_id: u32,
+    kept_bookmarks: Option<String>,
     max_footnote_id: u32,
     max_comment_id: Option<u32>,
     body: Option<(f64, f64)>,
@@ -320,6 +323,7 @@ impl PackageTemplate {
             document: options.document.clone(),
             max_drawing_id,
             max_bookmark_id,
+            kept_bookmarks: options.continued_bookmarks.clone(),
             max_footnote_id: max_footnote_id.unwrap_or(0),
             body,
             parts: parsed,
@@ -387,19 +391,24 @@ impl PackageTemplate {
         comments::add_comments(&mut out, &comments);
         let count = includes::print_includes(&mut out, &includes, &self.includes, hooks);
         sections::apply_sections(&mut out, &sections, &self.includes, hooks, count);
-        finish_template_parts(&mut out, self.drop_empty_last_page);
+        finish_template_parts(&mut out, self.drop_empty_last_page, self.kept_bookmarks.as_deref());
         self.document.apply(&mut out);
         out
     }
 }
 
-/// Repairs each template part's structure, now that subtemplates have printed, then drops an
-/// empty last page from the body.
-fn finish_template_parts(parts: &mut [(String, Cow<[u8]>)], should_drop_last_page: bool) {
+/// Renumbers repeated ids and repairs each template part's structure, now that subtemplates have
+/// printed, then drops an empty last page from the body.
+fn finish_template_parts(parts: &mut [(String, Cow<[u8]>)], should_drop_last_page: bool, kept_bookmarks: Option<&str>) {
     for (name, bytes) in parts.iter_mut().filter(|(name, _)| is_template_part(name)) {
-        let Ok(xml) = std::str::from_utf8(bytes) else { continue };
-        let repaired = structure::repair_structure(xml);
-        let finished = if should_drop_last_page && name == DOCUMENT_PART { Some(drop_empty_last_page(repaired.as_deref().unwrap_or(xml))) } else { repaired };
+        let Ok(written) = std::str::from_utf8(bytes) else { continue };
+        let mut finished = unique_ids::make_ids_unique(written, kept_bookmarks);
+        if let Some(repaired) = structure::repair_structure(finished.as_deref().unwrap_or(written)) {
+            finished = Some(repaired);
+        }
+        if should_drop_last_page && name == DOCUMENT_PART {
+            finished = Some(drop_empty_last_page(finished.as_deref().unwrap_or(written)));
+        }
         if let Some(finished) = finished {
             *bytes = Cow::Owned(finished.into_bytes());
         }

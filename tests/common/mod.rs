@@ -11,7 +11,12 @@ pub fn document(body: &str) -> String {
 
 /// The filled body of a document holding `body`, with the preview's options.
 pub fn fill(body: &str, data: Value) -> String {
-    let xml = fill_part(&document(body), &data, &FillOptions::default()).expect("template parses");
+    fill_with(body, data, &FillOptions::default())
+}
+
+/// The filled body of a document holding `body`.
+pub fn fill_with(body: &str, data: Value, options: &FillOptions) -> String {
+    let xml = fill_part(&document(body), &data, options).expect("template parses");
     let start = xml.find("<w:body>").unwrap() + "<w:body>".len();
     xml[start..xml.rfind("</w:body>").unwrap()].to_string()
 }

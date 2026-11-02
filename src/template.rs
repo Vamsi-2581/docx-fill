@@ -253,7 +253,7 @@ impl Template {
         let mut template = Template {
             max_drawing_id: crate::images::read_max_drawing_id(xml),
             max_bookmark_id: crate::footnotes::read_max_element_id(xml, "w:bookmarkStart"),
-            continued_bookmarks: options.continued_bookmarks.clone().filter(|_| options.extensions.rich_text),
+            continued_bookmarks: options.continued_bookmarks.clone(),
             body: crate::images::read_body_size(xml),
             parts,
             tags,
