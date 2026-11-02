@@ -67,12 +67,12 @@ fn numbers_links_in_the_order_they_print() {
 }
 
 #[test]
-fn does_not_overflow_on_a_mark_copied_into_a_runs_properties() {
+fn refuses_xml_that_would_copy_a_mark_into_a_runs_properties() {
     let broken = "<w:p><w:r><w:rPr><w:b/></w:x><w:t>a{~h}b</w:t></w:r><w:rPr><w:b/></w:rPr></w:p>";
 
-    let body = fill(broken, json!({ "h": "x" }));
+    let error = docx_fill::fill_part(&common::document(broken), &json!({ "h": "x" }), &docx_fill::FillOptions::default()).unwrap_err();
 
-    assert!(!body.contains('\u{E000}'), "{body}");
+    assert_eq!(error.message, "The XML is malformed: </w:x> closes <w:rPr>");
 }
 
 #[test]
