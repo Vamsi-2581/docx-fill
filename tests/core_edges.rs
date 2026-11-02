@@ -105,3 +105,43 @@ fn prints_core_only_tags_as_values_without_extensions() {
 
     assert_eq!(text(&xml), "[1][2][3]");
 }
+
+fn fill_error(body: &str, data: Value) -> String {
+    fill_part(&document(body), &data, &FillOptions::default()).unwrap_err().message
+}
+
+#[test]
+fn refuses_a_raw_tag_beside_other_text() {
+    for texts in [["a {@x}"], ["{@x}{@y}"]] {
+        assert_eq!(fill_error(&paragraph(&texts), json!({ "x": "<w:p/>" })), r#"The raw tag "x" should be the only text in its paragraph"#);
+    }
+}
+
+#[test]
+fn prints_nothing_for_a_raw_value_that_is_not_xml() {
+    for value in [json!(3), json!(true), json!(false), json!({ "a": 1 }), json!(0)] {
+        let body = fill(&(paragraph(&["{@x}"]) + &paragraph(&["after"])), json!({ "x": value }));
+        assert_eq!(paragraph_texts(&body), ["after"], "{value}");
+        assert!(!body.contains("</w:p>3") && !body.contains("true") && !body.contains("object"), "{value}");
+    }
+}
+
+#[test]
+fn refuses_a_loop_across_cells_beside_another_loop_in_its_end_cells() {
+    let data = json!({ "a": [{}], "b": [{}, {}] });
+    for cells in [["{#a}1{/a}{#b}", "2{/b}"], ["{#a}1{/a}x{#b}", "2{/b}"], ["{#b}1", "2{/b}{#a}3{/a}"]] {
+        let body = table(&[row(&[cell(&[cells[0]]), cell(&[cells[1]])])]);
+        assert!(fill_error(&body, data.clone()).starts_with("Unbalanced loop tags "), "{cells:?}");
+    }
+}
+
+#[test]
+fn fills_loops_that_share_a_cell_without_crossing() {
+    let data = json!({ "a": [{}], "b": [{}, {}] });
+    let one_cell = fill(&table(&[row(&[cell(&["{#a}x{/a}{#b}y{/b}"])])]), data.clone());
+    assert_eq!(read_rows(&one_cell), [["xyy"]]);
+    let nested = fill(&table(&[row(&[cell(&["{#b}1"]), cell(&["{#a}2{/a}{/b}"])])]), data.clone());
+    assert_eq!(read_rows(&nested), [["1", "2"], ["1", "2"]]);
+    let after_text = fill(&table(&[row(&[cell(&["{#b}1"]), cell(&["2{/b}x"])])]), data);
+    assert_eq!(read_rows(&after_text), [["1", "2x"], ["1", "2x"]]);
+}
