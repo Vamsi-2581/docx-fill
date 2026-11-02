@@ -78,3 +78,12 @@ fn keeps_unclosed_and_unopened_apart_from_doubled_delimiters() {
 fn keeps_escaped_text_apart_from_an_ampersand_delimiter() {
     assert_eq!(fill_with(&paragraph(&["a &lt; b &amp;name&amp;"]), "&", "&").unwrap(), "a &lt; b N");
 }
+
+#[test]
+fn names_a_doubled_open_delimiter_before_non_ascii_text() {
+    for (template, context) in [("{{prénom}", "{{prénom"), ("é{{日本}", "{{日本"), ("{{🎉", "{{🎉")] {
+        let error = fill_part(&document(&paragraph(&[template])), &json!({}), &FillOptions::core()).unwrap_err();
+
+        assert_eq!(error.message, format!("The tag beginning with \"{context}\" has duplicate open tags"));
+    }
+}
