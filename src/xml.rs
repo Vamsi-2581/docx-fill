@@ -34,6 +34,29 @@ pub(crate) fn tokenize(xml: &str) -> Result<Vec<Token<'_>>, String> {
     Ok(tokens)
 }
 
+/// Checks that each element `tokens` open closes, innermost first.
+///
+/// @returns An error naming the first close tag that does not match, or the first element left
+///   open.
+pub(crate) fn check_balanced(tokens: &[Token]) -> Result<(), String> {
+    let mut open: Vec<&str> = Vec::new();
+    for token in tokens {
+        match *token {
+            Token::Element { kind: ElementKind::Open, name, .. } => open.push(name),
+            Token::Element { kind: ElementKind::Close, name, .. } => match open.pop() {
+                Some(opened) if opened == name => {}
+                Some(opened) => return Err(format!("The XML is malformed: </{name}> closes <{opened}>")),
+                None => return Err(format!("The XML is malformed: </{name}> closes nothing")),
+            },
+            _ => {}
+        }
+    }
+    match open.last() {
+        Some(name) => Err(format!("The XML is malformed: <{name}> is never closed")),
+        None => Ok(()),
+    }
+}
+
 fn find_element_end(xml: &str, at: usize) -> Option<usize> {
     let rest = &xml[at..];
     for (open, close) in [("<!--", "-->"), ("<![CDATA[", "]]>"), ("<?", "?>")] {

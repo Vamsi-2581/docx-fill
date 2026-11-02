@@ -9,7 +9,7 @@ use crate::expressions::Expression;
 use crate::sections::SectionTag;
 use crate::styling::StyleKind;
 use crate::table_merge::{Merge, read_merge};
-use crate::xml::{ElementKind, Token, escape, read_attribute, tokenize, unescape};
+use crate::xml::{ElementKind, Token, check_balanced, escape, read_attribute, tokenize, unescape};
 use crate::{Delimiters, Extensions, FillError, FillOptions};
 
 const PARAGRAPH: &str = "w:p";
@@ -244,6 +244,7 @@ impl Template {
 
     pub(crate) fn parse_text(xml: &str, options: &FillOptions, layout: TextLayout) -> Result<Template, FillError> {
         let tokens = tokenize(xml).map_err(FillError::new)?;
+        check_balanced(&tokens).map_err(FillError::new)?;
         let (paragraph_tokens, text_tokens) = scan_paragraphs(&tokens, layout);
 
         // Tags by paragraph, found in its `<w:t>` text joined, since Word splits a tag across runs.
