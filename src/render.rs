@@ -8,7 +8,7 @@ use crate::table_merge::{Merge, merge_table};
 use crate::full_table::{Grid, write_table};
 use crate::images::{Image, MediaUse, body_or_default, drawing_size, drawing_xml};
 use crate::rich_text::{self, RichValue};
-use crate::template::{BlockKind, Part, StyleTarget, TagKind, Template};
+use crate::template::{Block, BlockKind, LoopPageBreaks, Part, StyleTarget, TagKind, Template};
 use crate::cell_styling;
 use crate::comments::{Comment, read_commented};
 use crate::includes::{INCLUDE_END, INCLUDE_START};
@@ -23,6 +23,7 @@ const CELL: &str = "w:tc";
 const ROW: &str = "w:tr";
 const TABLE: &str = "w:tbl";
 const RUN: &str = "w:r";
+const PAGE_BREAK_RUN: &str = "<w:r><w:br w:type=\"page\"/></w:r>";
 // Shapes `{:styleshape}` colours: DrawingML and the VML Word writes as a fallback.
 const SHAPES: [&str; 5] = ["wps:wsp", "v:shape", "v:rect", "v:roundrect", "v:oval"];
 // Segments including themselves stop here.
@@ -293,34 +294,51 @@ impl<'a> Render<'a, '_> {
                         None => body(self, scopes),
                     }
                 }
-                BlockKind::Loop { name, is_inverted: true } => {
-                    if !is_shown(look_up(scopes, name)) {
-                        self.render_range(block.body_start, block.body_end, &block.children, scopes);
-                    }
-                }
-                BlockKind::Loop { name, is_inverted: false } => {
+                BlockKind::Loop { name, is_inverted, page_breaks } => {
+                    let printed_from = self.out.len();
                     let value = look_up(scopes, name);
                     match value {
+                        _ if *is_inverted && !is_shown(value) => self.render_item(block, *page_breaks, scopes),
+                        _ if *is_inverted => {}
                         Some(Value::Array(items)) => {
                             for item in items {
                                 scopes.push(item);
-                                self.render_range(block.body_start, block.body_end, &block.children, scopes);
+                                self.render_item(block, *page_breaks, scopes);
                                 scopes.pop();
                             }
                         }
                         Some(object @ Value::Object(_)) => {
                             scopes.push(object);
-                            self.render_range(block.body_start, block.body_end, &block.children, scopes);
+                            self.render_item(block, *page_breaks, scopes);
                             scopes.pop();
                         }
                         // Any other shown value prints the body once in the current scope.
-                        _ if is_shown(value) => self.render_range(block.body_start, block.body_end, &block.children, scopes),
+                        _ if is_shown(value) => self.render_item(block, *page_breaks, scopes),
                         _ => {}
+                    }
+                    if page_breaks.after_last {
+                        self.end_with_page_break(printed_from);
                     }
                 }
             }
         }
         self.render_parts(at, to, scopes);
+    }
+
+    /// One repeat of a loop's body, after a page break paragraph when its opening paragraph had one.
+    fn render_item(&mut self, block: &'a Block, page_breaks: LoopPageBreaks, scopes: &mut Vec<&'a Value>) {
+        if page_breaks.before_each {
+            self.out.push_str(&format!("<w:p>{PAGE_BREAK_RUN}</w:p>"));
+        }
+        self.render_range(block.body_start, block.body_end, &block.children, scopes);
+    }
+
+    /// Ends the last paragraph printed since `from` with a page break, or prints one holding it.
+    fn end_with_page_break(&mut self, from: usize) {
+        match self.out[from..].rfind("</w:p>") {
+            Some(at) => self.out.insert_str(from + at, PAGE_BREAK_RUN),
+            None => self.out.push_str(&format!("<w:p>{PAGE_BREAK_RUN}</w:p>")),
+        }
     }
 
     fn render_parts(&mut self, from: usize, to: usize, scopes: &[&'a Value]) {
