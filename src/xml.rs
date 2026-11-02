@@ -113,7 +113,12 @@ pub(crate) fn unescape(text: &str) -> String {
     out
 }
 
-/// `text` escaped for element content.
+/// Whether XML 1.0 can hold `c`: not most control characters, U+FFFE or U+FFFF.
+pub(crate) fn is_xml_char(c: char) -> bool {
+    matches!(c, '\t' | '\n' | '\r') || (c >= ' ' && !matches!(c, '\u{fffe}' | '\u{ffff}'))
+}
+
+/// `text` escaped for element content, without characters XML cannot hold.
 pub(crate) fn escape(text: &str, out: &mut String) {
     for c in text.chars() {
         match c {
@@ -122,7 +127,8 @@ pub(crate) fn escape(text: &str, out: &mut String) {
             '>' => out.push_str("&gt;"),
             '"' => out.push_str("&quot;"),
             '\'' => out.push_str("&apos;"),
-            _ => out.push(c),
+            _ if is_xml_char(c) => out.push(c),
+            _ => {}
         }
     }
 }
