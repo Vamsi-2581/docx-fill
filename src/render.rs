@@ -13,6 +13,7 @@ use crate::cell_styling;
 use crate::comments::{Comment, read_commented};
 use crate::includes::{INCLUDE_END, INCLUDE_START};
 use crate::sections::{SECTION_END, SECTION_START, SectionUse};
+use crate::structure::repair_structure;
 use crate::xml::{ElementKind, escape, read_attribute};
 
 // A `\n` in a value outside a run: the text continues after a line break.
@@ -132,20 +133,22 @@ impl Template {
         let mut state = FillState { next_drawing_id: self.max_drawing_id + 1, body: None, container_fill: crate::CONTAINER_FILL, next_footnote_id: 1, next_comment_id: 0, next_bookmark_id: self.max_bookmark_id + 1 };
         let filled = self.fill(data, "", hooks, &mut state);
         // Only a package prints subtemplates.
-        if filled.includes.is_empty() {
-            return filled.xml;
-        }
-        let mut xml = String::with_capacity(filled.xml.len());
-        let mut is_in_mark = false;
-        for c in filled.xml.chars() {
-            match c {
-                INCLUDE_START => is_in_mark = true,
-                INCLUDE_END => is_in_mark = false,
-                _ if !is_in_mark => xml.push(c),
-                _ => {}
+        let xml = if filled.includes.is_empty() {
+            filled.xml
+        } else {
+            let mut xml = String::with_capacity(filled.xml.len());
+            let mut is_in_mark = false;
+            for c in filled.xml.chars() {
+                match c {
+                    INCLUDE_START => is_in_mark = true,
+                    INCLUDE_END => is_in_mark = false,
+                    _ if !is_in_mark => xml.push(c),
+                    _ => {}
+                }
             }
-        }
-        xml
+            xml
+        };
+        repair_structure(&xml).unwrap_or(xml)
     }
 
     pub(crate) fn fill(&self, data: &Value, part: &str, hooks: &mut dyn FillHooks, state: &mut FillState) -> FilledPart {

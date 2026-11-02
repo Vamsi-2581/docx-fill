@@ -27,6 +27,7 @@ mod sections;
 mod protection;
 mod render;
 mod rich_text;
+mod structure;
 mod styling;
 mod table_merge;
 mod template;
@@ -374,8 +375,7 @@ impl PackageTemplate {
                     if !filled.links.is_empty() {
                         links.push((name.clone(), filled.links));
                     }
-                    let xml = if self.drop_empty_last_page && name == DOCUMENT_PART { drop_empty_last_page(&filled.xml) } else { filled.xml };
-                    Cow::Owned(xml.into_bytes())
+                    Cow::Owned(filled.xml.into_bytes())
                 }
             };
             out.push((name.clone(), bytes));
@@ -387,8 +387,22 @@ impl PackageTemplate {
         comments::add_comments(&mut out, &comments);
         let count = includes::print_includes(&mut out, &includes, &self.includes, hooks);
         sections::apply_sections(&mut out, &sections, &self.includes, hooks, count);
+        finish_template_parts(&mut out, self.drop_empty_last_page);
         self.document.apply(&mut out);
         out
+    }
+}
+
+/// Repairs each template part's structure, now that subtemplates have printed, then drops an
+/// empty last page from the body.
+fn finish_template_parts(parts: &mut [(String, Cow<[u8]>)], should_drop_last_page: bool) {
+    for (name, bytes) in parts.iter_mut().filter(|(name, _)| is_template_part(name)) {
+        let Ok(xml) = std::str::from_utf8(bytes) else { continue };
+        let repaired = structure::repair_structure(xml);
+        let finished = if should_drop_last_page && name == DOCUMENT_PART { Some(drop_empty_last_page(repaired.as_deref().unwrap_or(xml))) } else { repaired };
+        if let Some(finished) = finished {
+            *bytes = Cow::Owned(finished.into_bytes());
+        }
     }
 }
 
