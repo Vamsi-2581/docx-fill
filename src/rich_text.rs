@@ -987,14 +987,15 @@ fn write_format(inner: &str, format: &Format) -> String {
     inner
 }
 
-/// HTML text escaped for `<w:t>`: `&`, `<` and `>` only.
+/// HTML text escaped for `<w:t>`: `&`, `<` and `>` only, without characters XML cannot hold.
 fn escape_text(text: &str, out: &mut String) {
     for c in text.chars() {
         match c {
             '&' => out.push_str("&amp;"),
             '<' => out.push_str("&lt;"),
             '>' => out.push_str("&gt;"),
-            _ => out.push(c),
+            _ if crate::xml::is_xml_char(c) => out.push(c),
+            _ => {}
         }
     }
 }
