@@ -87,6 +87,10 @@ A filter is named in `FillOptions::filters` and applied by `FillHooks::filter`. 
 
 A syntax error or unknown filter is an error when parsing. Names such as `table:abc.value` are not expressions, so turn this on per template. Assignments (`{a = 1}`) are refused, and calls give nothing, as JSON holds no functions.
 
+## Listing tags
+
+`Template::tags` and `PackageTemplate::tags` list each tag with its name, `TagType` and the text as written. A loop's, grid's or segment's tags are its children, so the list follows the shape of the data.
+
 ## Text edits
 
 `FilledDocument` works on a filled package's body text.
