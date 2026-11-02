@@ -20,6 +20,8 @@ Extensions, each on or off in `FillOptions::extensions`:
 - A value `{ "text": …, "comment": … }` (or `"comments": [...]`) prints its text with Word comments on it, with `FillOptions::comments` as the default author.
 - An empty last page left by a loop that printed nothing is dropped.
 
+Always on: a table whose rows a loop removed goes, and a cell, header, footer or text box whose content a tag removed keeps an empty paragraph, as the spec requires.
+
 `FillOptions::document` edits the whole package: read-only or password protection (the hash Word checks: legacy key, then SHA-1/256/384/512 with salt and spin count), a text watermark in every header, page margins and the default proofing language.
 
 `FilledDocument` works on a filled package's body text: `search` finds text within a paragraph (`\n` matches a line break, `\t` a tab), `replace` and `replace_all` change it in the run of its first character, `add_comment` puts a Word comment around a found range, and `comments` lists each comment with the text and XML it marks. Positions are a paragraph index and a character offset, not docxtemplater's XML token index.
