@@ -449,7 +449,7 @@ fn unclosed_tag(context: &str) -> FillError {
 
 /// `{{name}`: a second open delimiter straight after the first.
 fn duplicate_open_tag(text: &str, opened: usize, end: &DelimiterForms) -> FillError {
-    let context_end = (opened..text.len()).find(|&at| end.find(&text[at..]).is_some()).unwrap_or(text.len());
+    let context_end = text[opened..].char_indices().map(|(offset, _)| opened + offset).find(|&at| end.find(&text[at..]).is_some()).unwrap_or(text.len());
     FillError::new(format!("The tag beginning with \"{}\" has duplicate open tags", unescape(&text[opened..context_end])))
 }
 
