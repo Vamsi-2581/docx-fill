@@ -3,7 +3,8 @@
 
 mod common;
 
-use common::{fill, paragraph, paragraph_texts};
+use common::{fill, fill_with, paragraph, paragraph_texts};
+use docx_fill::FillOptions;
 use serde_json::json;
 
 const BASE_PPR: &str = r#"<w:pPr><w:pStyle w:val="Body"/></w:pPr>"#;
@@ -28,7 +29,8 @@ fn fills_every_repeat_of_a_tag_inside_a_loop() {
 
 #[test]
 fn keeps_the_repeated_paragraphs_style_run_font_and_bookmark() {
-    let body = fill(&looped("note"), json!({ "rows": [{ "note": "a" }, { "note": "b" }] }));
+    let options = FillOptions { continued_bookmarks: Some("scope_tag_".into()), ..FillOptions::default() };
+    let body = fill_with(&looped("note"), json!({ "rows": [{ "note": "a" }, { "note": "b" }] }), &options);
 
     let printed: Vec<&str> = body.split("</w:p>").filter(|each| !each.is_empty()).collect();
     assert_eq!(printed.len(), 2);

@@ -148,6 +148,7 @@ impl Template {
             }
             xml
         };
+        let xml = crate::unique_ids::make_ids_unique(&xml, self.continued_bookmarks.as_deref()).unwrap_or(xml);
         repair_structure(&xml).unwrap_or(xml)
     }
 
