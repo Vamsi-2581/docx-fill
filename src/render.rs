@@ -42,6 +42,24 @@ pub struct ModuleTag<'a> {
     pub value: Option<&'a Value>,
 }
 
+/// A value or raw tag whose value is missing or null.
+pub struct MissingValue<'a> {
+    pub kind: MissingKind,
+    /// The name looked up, or the expression with expressions on.
+    pub name: &'a str,
+    /// The tag as written between its delimiters, such as `name` or `@xml`.
+    pub written: &'a str,
+}
+
+/// Which kind of tag a [`MissingValue`] is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MissingKind {
+    /// `{name}`: the hook's text prints escaped.
+    Value,
+    /// `{@name}` or `{r@name}`: the hook's text prints as raw XML.
+    Raw,
+}
+
 /// What a fill asks of its caller.
 pub trait FillHooks {
     /// Escaped XML text printed for a module tag in `part`. Prints nothing by default.
@@ -59,6 +77,12 @@ pub trait FillHooks {
     /// missing input or argument is null. Returns the input by default.
     fn filter(&mut self, _name: &str, input: &Value, _arguments: &[Value]) -> Value {
         input.clone()
+    }
+
+    /// The text a value or raw tag in `part` prints when its value is missing or null, as
+    /// docxtemplater's `nullGetter` gives. `None` prints nothing, the default.
+    fn missing_value(&mut self, _part: &str, _tag: MissingValue) -> Option<String> {
+        None
     }
 }
 
@@ -229,11 +253,16 @@ impl<'a> Render<'a, '_> {
 
             match &block.kind {
                 // Only a string is XML; anything else prints nothing.
-                BlockKind::Raw { name } => {
-                    if let Some(Value::String(xml)) = self.look_up(scopes, name) {
-                        self.out.push_str(xml);
+                BlockKind::Raw { name, written } => match self.look_up(scopes, name) {
+                    Some(Value::String(xml)) => self.out.push_str(xml),
+                    None | Some(Value::Null) => {
+                        let missing = MissingValue { kind: MissingKind::Raw, name, written };
+                        if let Some(xml) = self.hooks.missing_value(self.part, missing) {
+                            self.out.push_str(&xml);
+                        }
                     }
-                }
+                    Some(_) => {}
+                },
                 BlockKind::Segment { .. } => {}
                 BlockKind::Section { name, tag } => {
                     // Sections belong to the body; elsewhere the paragraph goes.
@@ -385,7 +414,13 @@ impl<'a> Render<'a, '_> {
                     let value = if tag.kind.prints_value() { self.look_up(scopes, &tag.name) } else { None };
                     match tag.kind {
                         TagKind::Value => {
-                            let Some(value) = value else { continue };
+                            let Some(value) = value.filter(|value| !value.is_null()) else {
+                                let missing = MissingValue { kind: MissingKind::Value, name: &tag.name, written: &tag.text };
+                                if let Some(text) = self.hooks.missing_value(self.part, missing) {
+                                    self.print_text(&text, tag.run_props.as_deref());
+                                }
+                                continue;
+                            };
                             let commented = self.template.comment_defaults.as_ref().and_then(|defaults| read_commented(value, defaults));
                             match commented {
                                 Some((text, comments)) => self.print_commented(&text, comments, tag.run_props.as_deref()),

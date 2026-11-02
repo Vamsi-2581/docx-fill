@@ -52,7 +52,7 @@ pub use comments::CommentDefaults;
 pub use images::Image;
 pub use includes::{IncludeMode, IncludeStyles, Subtemplate};
 pub use json::read_include_options;
-pub use render::{FillHooks, ModuleTag, NoHooks};
+pub use render::{FillHooks, MissingKind, MissingValue, ModuleTag, NoHooks};
 pub use template::Template;
 pub use text::{CommentedText, FilledDocument, TextPosition, TextRange};
 
