@@ -109,7 +109,8 @@ pub(crate) struct Tag {
 #[derive(Debug)]
 pub(crate) enum BlockKind {
     Loop { name: String, is_inverted: bool, page_breaks: LoopPageBreaks },
-    Raw { name: String },
+    /// A raw tag, and the tag as written.
+    Raw { name: String, written: String },
     /// A paragraph holding `{?name}` tags, printed by their values.
     Placeholder { names: Vec<String> },
     /// A `{:table}` tag's paragraph.
@@ -361,7 +362,7 @@ impl Template {
 
     fn block_name(&self, block: usize) -> &str {
         match &self.blocks[block].kind {
-            BlockKind::Loop { name, .. } | BlockKind::Raw { name } => name,
+            BlockKind::Loop { name, .. } | BlockKind::Raw { name, .. } => name,
             BlockKind::Placeholder { names } => names.first().map_or("", String::as_str),
             BlockKind::FullTable { name, .. } | BlockKind::Grid { name } => name,
             BlockKind::Include { name } | BlockKind::Segment { name } | BlockKind::IncludeSegment { name, .. } | BlockKind::Section { name, .. } => name,
@@ -791,7 +792,7 @@ fn pair_blocks(parts: &[Part], tags: &[Tag], paragraphs: &[Paragraph], options: 
                 let element = if tag.kind == TagKind::Raw { PARAGRAPH } else { RUN };
                 let (start, end) = find_enclosing(parts, tag.part, element).ok_or_else(|| not_inside(tag, element))?;
                 blocks.push(Block {
-                    kind: BlockKind::Raw { name: tag.name.clone() },
+                    kind: BlockKind::Raw { name: tag.name.clone(), written: tag.text.clone() },
                     start,
                     end: end + 1,
                     body_start: end + 1,

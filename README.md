@@ -27,7 +27,7 @@ let filled = template.render(&json!({ "name": "Value" }));
 | `{-w:tr rows}` … `{/rows}` | Repeats the enclosing element, here a table row. |
 | `{@xml}` | Replaces its paragraph with raw XML. |
 
-A loop whose tags sit alone in their paragraphs repeats whole paragraphs (`paragraph_loop`). Delimiters can be anything, such as `[[ ]]`, `{{ }}` or `<< >>`. Tags starting with a prefix in `module_prefixes` go to the caller's `FillHooks`.
+A loop whose tags sit alone in their paragraphs repeats whole paragraphs (`paragraph_loop`). Delimiters can be anything, such as `[[ ]]`, `{{ }}` or `<< >>`. Tags starting with a prefix in `module_prefixes` go to the caller's `FillHooks`. `FillHooks::missing_value` decides what a missing or null value prints, as docxtemplater's `nullGetter` does; by default it prints nothing.
 
 ## Extensions
 
