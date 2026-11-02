@@ -138,3 +138,59 @@ fn reads_only_the_core_html_without_extras() {
     assert!(!xml.contains("strike"));
     assert!(xml.contains(">x</w:t>"));
 }
+
+#[test]
+fn keeps_the_text_of_cells_outside_a_table() {
+    for value in ["<p><td>x</td></p>", "<td>x</td>", "<tr><td>x</td></tr>", "<ul><td>x</td></ul>", "<ul><li><td>x</td></li></ul>", "<p>a</p><th>x</th>"] {
+        let texts = paragraph_texts(&html(value));
+        let expected = if value.contains("<li>") { "\u{2022}x" } else { "x" };
+        assert_eq!(texts.last().map(String::as_str), Some(expected), "{value}");
+    }
+}
+
+#[test]
+fn fills_any_html_without_panicking() {
+    const PIECES: [&str; 24] = [
+        "<table>", "</table>", "<tr>", "</tr>", "<td>", "</td>", "<th colspan=\"3\">", "</th>", "<p>", "</p>", "<ul>", "</ul>", "<ol>", "</ol>", "<li>", "</li>",
+        "<b>", "</b>", "<pre>", "</pre>", "<br>", "x", "<style>", "&amp;",
+    ];
+    // xorshift, seeded so a failure repeats.
+    let mut state: u64 = 0x9E37_79B9_7F4A_7C15;
+    for _ in 0..3000 {
+        let mut value = String::new();
+        for _ in 0..12 {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            value.push_str(PIECES[(state % PIECES.len() as u64) as usize]);
+        }
+        let filled = fill_part(&document(TAG), &json!({ "html": value }), &FillOptions::default());
+        assert!(filled.is_ok(), "{value}");
+    }
+}
+
+#[test]
+fn prints_nothing_inside_style_script_and_template() {
+    let body = html("<style>p{color:red}</style><p>x</p><SCRIPT>run()</SCRIPT><template><p>t</p></template><p>y</p>");
+    assert_eq!(paragraph_texts(&body), ["x", "y"]);
+}
+
+#[test]
+fn separates_adjacent_tables() {
+    let body = html("<table><tr><td>a</td></tr></table><table><tr><td>b</td></tr></table>");
+    assert_eq!(elements(&body, "w:tbl").len(), 2);
+    assert!(!body.contains("</w:tbl><w:tbl>"));
+}
+
+#[test]
+fn separates_adjacent_tables_in_a_cell() {
+    let body = html("<table><tr><td><table><tr><td>a</td></tr></table><table><tr><td>b</td></tr></table></td></tr></table>");
+    assert!(!body.contains("</w:tbl><w:tbl>"));
+}
+
+#[test]
+fn limits_a_cell_span_to_words_column_count() {
+    let body = html(r#"<table><td colspan="999999">x</td></table>"#);
+    assert!(body.contains(r#"<w:gridSpan w:val="63"/>"#));
+    assert!(body.len() < 10_000, "{} bytes", body.len());
+}

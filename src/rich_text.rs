@@ -32,6 +32,10 @@ const UNCHECKED: &str = "\u{2610}";
 const TABLE_BORDERS: &str = "<w:tblBorders><w:top w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"auto\"/><w:left w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"auto\"/><w:bottom w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"auto\"/><w:right w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"auto\"/><w:insideH w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"auto\"/><w:insideV w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"auto\"/></w:tblBorders>";
 // Grid column width for HTML tables, which take the full width (5000 fiftieths of a percent).
 const TABLE_COLUMN_TWIPS: u32 = 2000;
+/// Word's column limit, so a user's `colspan` cannot grow the output without bound.
+const MAX_COLUMN_SPAN: usize = 63;
+/// Elements whose contents never print.
+const HIDDEN_ELEMENTS: [&str; 3] = ["script", "style", "template"];
 
 pub(crate) struct RichValue {
     pub html: String,
@@ -134,6 +138,9 @@ pub(crate) fn write_paragraph(paragraph: &str, values: &[RichValue], links: &mut
                 (None, _) => String::new(),
             };
             let bookmarks = if index == 0 { bookmarks.as_str() } else { later.as_str() };
+            if follows_table(&blocks, index) {
+                out.push_str(&format!("{open}{paragraph_props}</w:p>"));
+            }
             write_block(&mut out, open, paragraph_props, bookmarks, block, run_props, links);
         }
         // A table cannot end a cell; the tag paragraph's look follows it.
@@ -172,7 +179,10 @@ fn write_block(out: &mut String, open: &str, paragraph_props: &str, bookmarks: &
                 out.push_str(&format!("<w:gridSpan w:val=\"{}\"/>", cell.span));
             }
             out.push_str("</w:tcPr>");
-            for block in &cell.blocks {
+            for (index, block) in cell.blocks.iter().enumerate() {
+                if follows_table(&cell.blocks, index) {
+                    out.push_str("<w:p/>");
+                }
                 write_block(out, "<w:p>", "", "", block, run_props, links);
             }
             if cell.blocks.last().is_none_or(|block| block.table.is_some()) {
@@ -187,6 +197,11 @@ fn write_block(out: &mut String, open: &str, paragraph_props: &str, bookmarks: &
         out.push_str("</w:tr>");
     }
     out.push_str("</w:tbl>");
+}
+
+/// Whether a table follows another table, which Word would merge into it.
+fn follows_table(blocks: &[Block], index: usize) -> bool {
+    index > 0 && blocks[index].table.is_some() && blocks[index - 1].table.is_some()
 }
 
 /// A block's runs for printing inside a paragraph; a table's cells are joined by tabs and its
@@ -605,6 +620,8 @@ fn read_extra_tag(reader: &mut Reader, is_closing: bool, tag: &str, attributes: 
             reader.current = None;
             true
         }
+        // Outside a table, as browsers do: the tag is dropped and its text kept.
+        "tr" | "td" | "th" if reader.tables.is_empty() => true,
         "tr" => {
             reader.close_cell();
             if let (false, Some((_, rows))) = (is_closing, reader.tables.last_mut()) {
@@ -615,7 +632,7 @@ fn read_extra_tag(reader: &mut Reader, is_closing: bool, tag: &str, attributes: 
         "td" | "th" => {
             reader.close_cell();
             if !is_closing {
-                let span = read_attribute(attributes, "colspan").and_then(|span| span.trim().parse::<usize>().ok()).unwrap_or(1).max(1);
+                let span = read_attribute(attributes, "colspan").and_then(|span| span.trim().parse::<usize>().ok()).unwrap_or(1).clamp(1, MAX_COLUMN_SPAN);
                 if let Some((_, rows)) = reader.tables.last_mut() {
                     if rows.is_empty() {
                         rows.push(Vec::new());
@@ -623,6 +640,7 @@ fn read_extra_tag(reader: &mut Reader, is_closing: bool, tag: &str, attributes: 
                     rows.last_mut().expect("pushed above").push(Cell { span, blocks: Vec::new() });
                 }
                 reader.collections.push(Vec::new());
+                reader.current = None;
                 let mut format = read_css(attributes);
                 if tag == "th" {
                     format.bold = format.bold.or(Some(true));
@@ -752,6 +770,9 @@ fn read_html_tokens(html: &str, has_extras: bool) -> Vec<HtmlToken<'_>> {
             continue;
         }
         match read_html_tag(rest, has_extras) {
+            Some((HtmlToken::Tag { is_closing: false, name, .. }, length)) if has_extras && is_hidden(name) => {
+                at += length + find_closing_tag(&rest[length..], name).unwrap_or(rest.len() - length);
+            }
             Some((token, length)) => {
                 tokens.push(token);
                 at += length;
@@ -760,6 +781,17 @@ fn read_html_tokens(html: &str, has_extras: bool) -> Vec<HtmlToken<'_>> {
         }
     }
     tokens
+}
+
+fn is_hidden(name: &str) -> bool {
+    HIDDEN_ELEMENTS.iter().any(|hidden| hidden.eq_ignore_ascii_case(name))
+}
+
+/// The bytes up to and including `</name>`, matched without case.
+fn find_closing_tag(html: &str, name: &str) -> Option<usize> {
+    let closing = format!("</{}", name.to_ascii_lowercase());
+    let start = html.to_ascii_lowercase().find(&closing)?;
+    Some(start + html[start..].find('>')? + 1)
 }
 
 fn read_html_tag(text: &str, has_extras: bool) -> Option<(HtmlToken<'_>, usize)> {
