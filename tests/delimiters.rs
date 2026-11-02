@@ -44,3 +44,37 @@ fn fills_several_same_delimiter_tags_in_one_paragraph() {
         .unwrap();
     assert_eq!(xml, "one and two");
 }
+
+#[test]
+fn fills_tags_between_delimiters_xml_escapes() {
+    for (start, end) in [("<<", ">>"), ("<%", "%>"), ("&", "&")] {
+        let written = format!("{start}name{end}").replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
+        assert_eq!(fill_with(&paragraph(&[&written]), start, end).unwrap(), "N", "{start}name{end}");
+    }
+}
+
+#[test]
+fn fills_a_greater_than_delimiter_written_raw() {
+    assert_eq!(fill_with(&paragraph(&["&lt;&lt;name>>"]), "<<", ">>").unwrap(), "N");
+}
+
+#[test]
+fn names_a_doubled_open_delimiter() {
+    assert_eq!(fill_with(&paragraph(&["x {{name} y"]), "{", "}").unwrap_err(), r#"The tag beginning with "{{name" has duplicate open tags"#);
+}
+
+#[test]
+fn names_a_doubled_close_delimiter() {
+    assert_eq!(fill_with(&paragraph(&["x {name}} y"]), "{", "}").unwrap_err(), r#"The tag ending with "name}}" has duplicate close tags"#);
+}
+
+#[test]
+fn keeps_unclosed_and_unopened_apart_from_doubled_delimiters() {
+    assert_eq!(fill_with(&paragraph(&["{a {b}"]), "{", "}").unwrap_err(), r#"The tag beginning with "{a " is unclosed"#);
+    assert_eq!(fill_with(&paragraph(&["{a} b}"]), "{", "}").unwrap_err(), r#"The tag beginning with " b" is unopened"#);
+}
+
+#[test]
+fn keeps_escaped_text_apart_from_an_ampersand_delimiter() {
+    assert_eq!(fill_with(&paragraph(&["a &lt; b &amp;name&amp;"]), "&", "&").unwrap(), "a &lt; b N");
+}
