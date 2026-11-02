@@ -1,5 +1,7 @@
 //! Fills a parsed template with tag values.
 
+use std::borrow::Cow;
+
 use serde_json::Value;
 
 use crate::properties::edit_each;
@@ -10,6 +12,7 @@ use crate::images::{Image, MediaUse, body_or_default, drawing_size, drawing_xml}
 use crate::rich_text::{self, RichValue};
 use crate::template::{Block, BlockKind, LoopPageBreaks, Part, StyleTarget, TagKind, Template};
 use crate::cell_styling;
+use crate::expressions::{Computed, ComputedEnd, Evaluation};
 use crate::comments::{Comment, read_commented};
 use crate::includes::{INCLUDE_END, INCLUDE_START};
 use crate::sections::{SECTION_END, SECTION_START, SectionUse};
@@ -50,6 +53,12 @@ pub trait FillHooks {
     /// zero or empty text. `None` prints nothing, the default.
     fn image(&mut self, _part: &str, _value: &Value) -> Option<Image> {
         None
+    }
+
+    /// The result of `{input | name:arguments}`, with a filter named in `FillOptions::filters`. A
+    /// missing input or argument is null. Returns the input by default.
+    fn filter(&mut self, _name: &str, input: &Value, _arguments: &[Value]) -> Value {
+        input.clone()
     }
 }
 
@@ -122,6 +131,10 @@ struct Render<'a, 'h> {
     media: Vec<MediaUse>,
     footnotes: Vec<(u32, String)>,
     links: Vec<String>,
+    /// Expressions' results, which live as long as the data does.
+    computed: ComputedEnd<'a>,
+    /// Each array loop item's position in the scopes and its index, innermost last.
+    loop_indexes: Vec<(usize, usize)>,
 }
 
 impl Template {
@@ -156,6 +169,7 @@ impl Template {
     }
 
     pub(crate) fn fill(&self, data: &Value, part: &str, hooks: &mut dyn FillHooks, state: &mut FillState) -> FilledPart {
+        let computed = Computed::default();
         let mut render = Render {
             template: self,
             part,
@@ -178,6 +192,8 @@ impl Template {
             media: Vec::new(),
             footnotes: Vec::new(),
             links: Vec::new(),
+            computed: computed.end(),
+            loop_indexes: Vec::new(),
         };
         let mut scopes = vec![data];
         render.render_range(0, self.parts.len(), &self.top, &mut scopes);
@@ -188,6 +204,18 @@ impl Template {
 }
 
 impl<'a> Render<'a, '_> {
+    /// The value a tag's name gives: its expression's result with expressions on, else the name's
+    /// value in the innermost scope that has one.
+    fn look_up(&mut self, scopes: &[&'a Value], name: &str) -> Option<&'a Value> {
+        let template = self.template;
+        let Some(expression) = template.expressions.get(name) else { return look_up(scopes, name) };
+        let mut evaluation = Evaluation { scopes, loop_indexes: &self.loop_indexes, hooks: &mut *self.hooks };
+        match evaluation.evaluate(expression)? {
+            Cow::Borrowed(value) => Some(value),
+            Cow::Owned(value) => Some(self.computed.keep(value)),
+        }
+    }
+
     fn render_range(&mut self, from: usize, to: usize, blocks: &[usize], scopes: &mut Vec<&'a Value>) {
         let template = self.template;
         let mut at = from;
@@ -202,21 +230,21 @@ impl<'a> Render<'a, '_> {
             match &block.kind {
                 // Only a string is XML; anything else prints nothing.
                 BlockKind::Raw { name } => {
-                    if let Some(Value::String(xml)) = look_up(scopes, name) {
+                    if let Some(Value::String(xml)) = self.look_up(scopes, name) {
                         self.out.push_str(xml);
                     }
                 }
                 BlockKind::Segment { .. } => {}
                 BlockKind::Section { name, tag } => {
                     // Sections belong to the body; elsewhere the paragraph goes.
-                    let Some(value) = look_up(scopes, name).filter(|_| self.part == self.state.main_part) else { continue };
+                    let Some(value) = self.look_up(scopes, name).filter(|_| self.part == self.state.main_part) else { continue };
                     self.out.push(SECTION_START);
                     self.out.push_str(&self.sections.len().to_string());
                     self.out.push(SECTION_END);
                     self.sections.push(SectionUse { tag: *tag, value: value.clone(), scope: merge_scopes(scopes) });
                 }
                 BlockKind::IncludeSegment { name, is_dynamic } => {
-                    let wanted = if *is_dynamic { look_up(scopes, name).and_then(Value::as_str) } else { Some(name.as_str()) };
+                    let wanted = if *is_dynamic { self.look_up(scopes, name).and_then(Value::as_str) } else { Some(name.as_str()) };
                     let segment = wanted.and_then(|wanted| template.blocks.iter().find(|each| matches!(&each.kind, BlockKind::Segment { name } if name == wanted)));
                     let Some(segment) = segment.filter(|_| self.segment_depth < MAX_SEGMENT_DEPTH) else { continue };
                     self.segment_depth += 1;
@@ -224,7 +252,7 @@ impl<'a> Render<'a, '_> {
                     self.segment_depth -= 1;
                 }
                 BlockKind::Include { name } => {
-                    let names: Vec<&str> = match look_up(scopes, name) {
+                    let names: Vec<&str> = match self.look_up(scopes, name) {
                         Some(Value::String(name)) => vec![name.as_str()],
                         Some(Value::Array(items)) => items.iter().filter_map(Value::as_str).collect(),
                         _ => Vec::new(),
@@ -241,14 +269,14 @@ impl<'a> Render<'a, '_> {
                     }
                 }
                 BlockKind::FullTable { name, is_in_cell } => {
-                    if let Some(value) = look_up(scopes, name) {
+                    if let Some(value) = self.look_up(scopes, name) {
                         let body = body_or_default(self.template.body.or(self.state.body));
                         self.out.push_str(&write_table(value, body, *is_in_cell));
                     }
                 }
                 BlockKind::Grid { name } => {
                     let body = body_or_default(self.template.body.or(self.state.body));
-                    let Some(grid) = look_up(scopes, name).and_then(|value| Grid::read(value, body)) else { continue };
+                    let Some(grid) = self.look_up(scopes, name).and_then(|value| Grid::read(value, body)) else { continue };
                     let columns = grid.columns();
                     for (index, items) in grid.items.chunks(grid.rows * columns).enumerate() {
                         grid.write_table_start(&mut self.out, index);
@@ -275,7 +303,7 @@ impl<'a> Render<'a, '_> {
                     grid.write_end(&mut self.out);
                 }
                 BlockKind::Placeholder { names } => {
-                    let values: Vec<Option<&Value>> = names.iter().map(|name| look_up(scopes, name)).collect();
+                    let values: Vec<Option<&'a Value>> = names.iter().map(|name| self.look_up(scopes, name)).collect();
                     if !values.iter().all(|value| is_shown(*value)) {
                         continue;
                     }
@@ -299,15 +327,17 @@ impl<'a> Render<'a, '_> {
                 }
                 BlockKind::Loop { name, is_inverted, page_breaks } => {
                     let printed_from = self.out.len();
-                    let value = look_up(scopes, name);
+                    let value = self.look_up(scopes, name);
                     match value {
                         _ if *is_inverted && !is_shown(value) => self.render_item(block, *page_breaks, scopes),
                         _ if *is_inverted => {}
                         Some(Value::Array(items)) => {
-                            for item in items {
+                            for (index, item) in items.iter().enumerate() {
+                                self.loop_indexes.push((scopes.len(), index));
                                 scopes.push(item);
                                 self.render_item(block, *page_breaks, scopes);
                                 scopes.pop();
+                                self.loop_indexes.pop();
                             }
                         }
                         Some(object @ Value::Object(_)) => {
@@ -352,10 +382,10 @@ impl<'a> Render<'a, '_> {
                 Part::Text(text) => self.out.push_str(text),
                 Part::Tag(index) => {
                     let tag = &template.tags[*index];
-                    let value = || look_up(scopes, &tag.name);
+                    let value = if tag.kind.prints_value() { self.look_up(scopes, &tag.name) } else { None };
                     match tag.kind {
                         TagKind::Value => {
-                            let Some(value) = value() else { continue };
+                            let Some(value) = value else { continue };
                             let commented = self.template.comment_defaults.as_ref().and_then(|defaults| read_commented(value, defaults));
                             match commented {
                                 Some((text, comments)) => self.print_commented(&text, comments, tag.run_props.as_deref()),
@@ -363,11 +393,11 @@ impl<'a> Render<'a, '_> {
                             }
                         }
                         TagKind::Module(module) => {
-                            let printed = self.hooks.module_tag(self.part, ModuleTag { module, name: &tag.name, value: value() });
+                            let printed = self.hooks.module_tag(self.part, ModuleTag { module, name: &tag.name, value });
                             self.out.push_str(&printed);
                         }
                         TagKind::CellStyle => {
-                            if let (Some(style), Some(cell)) = (read_style(value()), self.cells.last_mut()) {
+                            if let (Some(style), Some(cell)) = (read_style(value), self.cells.last_mut()) {
                                 cell.1 = Some(style);
                             }
                         }
@@ -375,7 +405,7 @@ impl<'a> Render<'a, '_> {
                             self.out.push(RANGE_START);
                             self.out.push_str(&self.ranges.len().to_string());
                             self.out.push(RANGE_START_END);
-                            self.ranges.push(read_style(value()).unwrap_or_default());
+                            self.ranges.push(read_style(value).unwrap_or_default());
                         }
                         TagKind::StyleEnd => {
                             if !self.ranges.is_empty() {
@@ -390,11 +420,11 @@ impl<'a> Render<'a, '_> {
                                 StyleTarget::Shape => self.shapes.last_mut().map(|frame| &mut frame.1),
                                 StyleTarget::Range => None,
                             };
-                            if let (Some(style), Some(frame)) = (read_style(value()), frame) {
+                            if let (Some(style), Some(frame)) = (read_style(value), frame) {
                                 *frame = Some(frame.take().unwrap_or_default().and(style));
                             }
                         }
-                        TagKind::GlobalStyle(kind) => self.restyle_definition(kind, read_style(value())),
+                        TagKind::GlobalStyle(kind) => self.restyle_definition(kind, read_style(value)),
                         TagKind::TableMerge(ref merge) => {
                             if let Some(table) = self.tables.last_mut() {
                                 table.1.push(merge.clone());
@@ -402,7 +432,7 @@ impl<'a> Render<'a, '_> {
                         }
                         TagKind::Placeholder => {
                             // A list's item prints in its own paragraph.
-                            let printed = match value() {
+                            let printed = match value {
                                 Some(Value::Array(_)) => scopes.last().filter(|item| !item.is_object() && !item.is_array()).map(|item| print_value(item)),
                                 Some(Value::Bool(_) | Value::Object(_)) | None => None,
                                 Some(value) => Some(print_value(value)),
@@ -411,16 +441,16 @@ impl<'a> Render<'a, '_> {
                                 escape(&printed, &mut self.out);
                             }
                         }
-                        TagKind::Footnote => self.print_footnote(value(), tag.run_props.as_deref()),
+                        TagKind::Footnote => self.print_footnote(value, tag.run_props.as_deref()),
                         TagKind::RichText { is_block } => {
-                            let html = value().and_then(Value::as_str).unwrap_or_default().to_string();
+                            let html = value.and_then(Value::as_str).unwrap_or_default().to_string();
                             self.out.push_str(&rich_text::mark(self.rich_values.len()));
                             self.rich_values.push(RichValue { html, is_block, has_extras: self.template.html_extras });
                             if let Some(paragraph) = self.paragraphs.last_mut() {
                                 paragraph.has_rich_text = true;
                             }
                         }
-                        TagKind::Image { cell_width, is_centered } => self.print_image(value(), cell_width, is_centered),
+                        TagKind::Image { cell_width, is_centered } => self.print_image(value, cell_width, is_centered),
                         TagKind::Raw | TagKind::RawRun | TagKind::Open { .. } | TagKind::Close | TagKind::FullTable | TagKind::GridOpen => {}
                         TagKind::Include | TagKind::SegmentOpen { .. } | TagKind::IncludeSegment { .. } | TagKind::Section(_) => {}
                     }
