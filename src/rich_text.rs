@@ -32,6 +32,8 @@ const UNCHECKED: &str = "\u{2610}";
 const TABLE_BORDERS: &str = "<w:tblBorders><w:top w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"auto\"/><w:left w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"auto\"/><w:bottom w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"auto\"/><w:right w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"auto\"/><w:insideH w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"auto\"/><w:insideV w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"auto\"/></w:tblBorders>";
 // Grid column width for HTML tables, which take the full width (5000 fiftieths of a percent).
 const TABLE_COLUMN_TWIPS: u32 = 2000;
+// Writing and dropping a table recurses, and a value decides how deep it goes.
+const MAX_TABLE_DEPTH: usize = 32;
 /// Word's column limit, so a user's `colspan` cannot grow the output without bound.
 const MAX_COLUMN_SPAN: usize = 63;
 /// Elements whose contents never print.
@@ -113,50 +115,106 @@ pub(crate) fn mark(index: usize) -> String {
 /// External links are added to `links`, whose position names their relationship. `continued`
 /// gives the bookmark prefix whose later paragraphs get numbered bookmarks, and the next free id.
 pub(crate) fn write_paragraph(paragraph: &str, values: &[RichValue], links: &mut Vec<String>, continued: Option<(&str, &mut u32)>) -> String {
-    let Some((mark, index)) = find_mark(paragraph) else { return paragraph.to_string() };
-    let value = &values[index];
-    let other_text = read_text(paragraph).replacen(&mark, "", 1);
-    let run = find_run(paragraph, &mark);
-    let run_props = run.and_then(|run| find_between(run, "<w:rPr>", "</w:rPr>")).unwrap_or("");
-    let blocks = read_html(&value.html, value.has_extras);
+    let mut paragraph = write_earlier_marks(paragraph, values, links);
+    while let Some((mark, index)) = find_mark(&paragraph) {
+        // Only printed values hold marks by accident, and those have no value to print.
+        let Some(value) = values.get(index) else {
+            paragraph = paragraph.replace(&mark, "");
+            continue;
+        };
+        let other_text = read_text(&paragraph).replacen(&mark, "", 1);
+        let run = find_run(&paragraph, &mark);
+        let run_props = run.and_then(|run| find_between(run, "<w:rPr>", "</w:rPr>")).unwrap_or("");
+        let blocks = read_html(&value.html, value.has_extras);
 
-    // Alone in its paragraph: the paragraph becomes the value's paragraphs.
-    if value.is_block && other_text.trim().is_empty() && !blocks.is_empty() && run.is_some() {
-        let open = &paragraph[..paragraph.find('>').map_or(0, |at| at + 1)];
-        let paragraph_props = find_between(paragraph, "<w:pPr>", "</w:pPr>").unwrap_or("");
-        let bookmarks = find_bookmarks(paragraph);
-        let mut continued = continued.and_then(|(prefix, next_id)| find_numbered_bookmark(&bookmarks, prefix).map(|name| (name, next_id)));
-        let mut out = String::new();
-        for (index, block) in blocks.iter().enumerate() {
-            let later = match (&mut continued, index) {
-                (_, 0) => String::new(),
-                (Some((name, next_id)), _) => {
-                    let id = **next_id;
-                    **next_id += 1;
-                    format!("<w:bookmarkStart w:id=\"{id}\" w:name=\"{name}_{index}\"/><w:bookmarkEnd w:id=\"{id}\"/>")
-                }
-                (None, _) => String::new(),
-            };
-            let bookmarks = if index == 0 { bookmarks.as_str() } else { later.as_str() };
-            if follows_table(&blocks, index) {
-                out.push_str(&format!("{open}{paragraph_props}</w:p>"));
-            }
-            write_block(&mut out, open, paragraph_props, bookmarks, block, run_props, links);
+        // Alone in its paragraph: the paragraph becomes the value's paragraphs.
+        if value.is_block && other_text.trim().is_empty() && !blocks.is_empty() && run.is_some() {
+            return write_blocks(&paragraph, &blocks, run_props, links, continued);
         }
-        // A table cannot end a cell; the tag paragraph's look follows it.
-        if blocks.last().is_some_and(|block| block.table.is_some()) {
+
+        // Beside other text: the runs go where the tag was, joined by breaks.
+        let inline = join_inline(&blocks, run_props, links);
+        let replaced = match run {
+            Some(run) => paragraph.replacen(run, &split_run(run, &mark, &inline), 1),
+            None => paragraph.replacen(&mark, "", 1),
+        };
+        // Broken XML can copy a mark into a run's properties, and it would never go.
+        paragraph = replaced.replace(&mark, "");
+    }
+    paragraph
+}
+
+/// `paragraph` with every mark but its last printed inline, in one pass, as only a last mark can
+/// be alone in its paragraph.
+fn write_earlier_marks(paragraph: &str, values: &[RichValue], links: &mut Vec<String>) -> String {
+    let mut left = paragraph.matches(MARK_START).count().saturating_sub(1);
+    let mut out = String::with_capacity(paragraph.len());
+    let mut from = 0;
+    while left > 0 {
+        let Some(at) = find_element_start(&paragraph[from..], "<w:r") else { break };
+        let start = from + at;
+        let Some(length) = paragraph[start..].find("</w:r>") else { break };
+        let end = start + length + "</w:r>".len();
+        let run = &paragraph[start..end];
+        out.push_str(&paragraph[from..start]);
+        from = end;
+        if !run.contains(MARK_START) {
+            out.push_str(run);
+            continue;
+        }
+
+        let open = &run[..run.find('>').map_or(0, |at| at + 1)];
+        let run_props = find_between(run, "<w:rPr>", "</w:rPr>").unwrap_or("");
+        let text = read_text(run);
+        let mut rest = text.as_str();
+        while left > 0 {
+            let Some((mark, index)) = find_mark(rest) else { break };
+            let at = rest.find(&mark).unwrap_or(0);
+            out.push_str(&write_text_run(open, run_props, &rest[..at]));
+            if let Some(value) = values.get(index) {
+                out.push_str(&join_inline(&read_html(&value.html, value.has_extras), run_props, links));
+            }
+            rest = &rest[at + mark.len()..];
+            left -= 1;
+        }
+        out.push_str(&write_text_run(open, run_props, rest));
+    }
+    out.push_str(&paragraph[from..]);
+    out
+}
+
+/// The paragraph as the value's paragraphs, in place of its own.
+fn write_blocks(paragraph: &str, blocks: &[Block], run_props: &str, links: &mut Vec<String>, continued: Option<(&str, &mut u32)>) -> String {
+    let open = &paragraph[..paragraph.find('>').map_or(0, |at| at + 1)];
+    let paragraph_props = find_between(paragraph, "<w:pPr>", "</w:pPr>").unwrap_or("");
+    let bookmarks = find_bookmarks(paragraph);
+    let mut continued = continued.and_then(|(prefix, next_id)| find_numbered_bookmark(&bookmarks, prefix).map(|name| (name, next_id)));
+    let mut out = String::new();
+    for (index, block) in blocks.iter().enumerate() {
+        let later = match (&mut continued, index) {
+            (_, 0) => String::new(),
+            (Some((name, next_id)), _) => {
+                let id = **next_id;
+                **next_id += 1;
+                format!("<w:bookmarkStart w:id=\"{id}\" w:name=\"{name}_{index}\"/><w:bookmarkEnd w:id=\"{id}\"/>")
+            }
+            (None, _) => String::new(),
+        };
+        let bookmarks = if index == 0 { bookmarks.as_str() } else { later.as_str() };
+        if follows_table(blocks, index) {
             out.push_str(&format!("{open}{paragraph_props}</w:p>"));
         }
-        return out;
+        write_block(&mut out, open, paragraph_props, bookmarks, block, run_props, links);
     }
+    // A table cannot end a cell; the tag paragraph's look follows it.
+    if blocks.last().is_some_and(|block| block.table.is_some()) {
+        out.push_str(&format!("{open}{paragraph_props}</w:p>"));
+    }
+    out
+}
 
-    // Beside other text: the runs go where the tag was, joined by breaks.
-    let inline = blocks.iter().map(|block| write_inline(block, run_props, links)).collect::<Vec<_>>().join(&format!("<w:r>{run_props}<w:br/></w:r>"));
-    let replaced = match run {
-        Some(run) => paragraph.replacen(run, &split_run(run, &mark, &inline), 1),
-        None => paragraph.replacen(&mark, "", 1),
-    };
-    write_paragraph(&replaced, values, links, continued)
+fn join_inline(blocks: &[Block], run_props: &str, links: &mut Vec<String>) -> String {
+    blocks.iter().map(|block| write_inline(block, run_props, links)).collect::<Vec<_>>().join(&format!("<w:r>{run_props}<w:br/></w:r>"))
 }
 
 fn write_block(out: &mut String, open: &str, paragraph_props: &str, bookmarks: &str, block: &Block, run_props: &str, links: &mut Vec<String>) {
@@ -245,8 +303,11 @@ fn split_run(run: &str, mark: &str, runs: &str) -> String {
     let text = read_text(run);
     let mut pieces = text.split(mark);
     let (before, after) = (pieces.next().unwrap_or(""), pieces.next().unwrap_or(""));
-    let text_run = |text: &str| if text.is_empty() { String::new() } else { format!("{open}{props}<w:t xml:space=\"preserve\">{text}</w:t></w:r>") };
-    format!("{}{runs}{}", text_run(before), text_run(after))
+    format!("{}{runs}{}", write_text_run(open, props, before), write_text_run(open, props, after))
+}
+
+fn write_text_run(open: &str, props: &str, text: &str) -> String {
+    if text.is_empty() { String::new() } else { format!("{open}{props}<w:t xml:space=\"preserve\">{text}</w:t></w:r>") }
 }
 
 /// The joined `<w:t>` text of `xml`, as written.
@@ -386,6 +447,8 @@ struct Reader {
     containers: Vec<(String, Container)>,
     /// Open tables: how many collections were open before each, and its rows.
     tables: Vec<(usize, Vec<Vec<Cell>>)>,
+    /// Open tables past `MAX_TABLE_DEPTH`, printed as part of the table around them.
+    ignored_tables: usize,
 }
 
 impl Reader {
@@ -458,6 +521,7 @@ fn read_html(html: &str, has_extras: bool) -> Vec<Block> {
         formats: Vec::new(),
         containers: Vec::new(),
         tables: Vec::new(),
+        ignored_tables: 0,
     };
 
     for token in read_html_tokens(html, has_extras) {
@@ -535,6 +599,10 @@ fn read_html(html: &str, has_extras: bool) -> Vec<Block> {
             _ => {}
         }
     }
+    // A table left open ends with the value.
+    while !reader.tables.is_empty() {
+        read_extra_tag(&mut reader, true, "table", &[]);
+    }
     reader.collections.swap_remove(0)
 }
 
@@ -609,8 +677,16 @@ fn read_extra_tag(reader: &mut Reader, is_closing: bool, tag: &str, attributes: 
         "table" => {
             reader.current = None;
             if !is_closing {
+                if reader.tables.len() >= MAX_TABLE_DEPTH {
+                    reader.ignored_tables += 1;
+                    return true;
+                }
                 let depth = reader.collections.len() - 1;
                 reader.tables.push((depth, Vec::new()));
+                return true;
+            }
+            if reader.ignored_tables > 0 {
+                reader.ignored_tables -= 1;
                 return true;
             }
             reader.close_cell();
