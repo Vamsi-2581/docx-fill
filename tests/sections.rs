@@ -26,7 +26,7 @@ fn sub_parts() -> Vec<(String, Vec<u8>)> {
         ("word/header3.xml", r#"<w:hdr xmlns:w="w"><w:p><w:pPr><w:pStyle w:val="SubHeader"/></w:pPr><w:r><w:t>Sub {title}</w:t></w:r></w:p></w:hdr>"#),
         ("word/footer2.xml", r#"<w:ftr xmlns:w="w"><w:p><w:r><w:t>Sub footer</w:t></w:r></w:p></w:ftr>"#),
         ("word/styles.xml", r#"<w:styles xmlns:w="w"><w:style w:type="paragraph" w:styleId="SubHeader"><w:name w:val="Sub header"/></w:style></w:styles>"#),
-        ("[Content_Types].xml", r#"<Types xmlns="t"><Override PartName="/word/header3.xml" ContentType="header+xml"/><Override PartName="/word/footer2.xml" ContentType="footer+xml"/></Types>"#),
+        ("[Content_Types].xml", r#"<Types xmlns="t"><Override PartName="/word/header3.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml"/><Override PartName="/word/footer2.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.footer+xml"/></Types>"#),
     ]
     .into_iter()
     .map(|(name, xml)| (name.to_string(), xml.as_bytes().to_vec()))

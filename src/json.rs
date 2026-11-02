@@ -20,7 +20,7 @@ impl FillOptions {
     ///   "extensions": "all" | false | { "tableMerge": true, "htmlExtras": false, … },
     ///   "dropEmptyLastPage": true, "modulePrefixes": ["$"], "dropStyleParagraphs": false,
     ///   "comments": { "author": "…", "initials": "…", "date": "2026-11-02T09:00:00Z" },
-///   "continuedBookmarks": "tag_",
+    ///   "continuedBookmarks": "tag_", "fillProperties": true,
     ///   "document": {
     ///     "readOnly": false, "language": "en-GB",
     ///     "protection": { "password": "…", "protect": "readOnly", "algorithm": "SHA-512", "spinCount": 100000, "salt": "…" },
@@ -51,6 +51,7 @@ impl FillOptions {
                 "dropStyleParagraphs" => self.drop_style_paragraphs = read_bool(value, key)?,
                 "comments" => self.comments = read_comment_defaults(value)?,
                 "document" => self.document = read_document_edits(value)?,
+                "fillProperties" => self.fill_properties = read_bool(value, key)?,
                 "continuedBookmarks" => self.continued_bookmarks = Some(read_string(value, key)?),
                 _ => return Err(unknown(key)),
             }

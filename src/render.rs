@@ -68,6 +68,8 @@ pub(crate) struct FillState {
     pub next_footnote_id: u32,
     pub next_comment_id: u32,
     pub next_bookmark_id: u32,
+    /// The package's main document part, whose body takes sections, footnotes and comments.
+    pub main_part: String,
 }
 
 /// A filled part and the media its drawings show.
@@ -131,7 +133,7 @@ impl Template {
     /// The part filled with `data`, asking `hooks` for module tags and images. An image's media
     /// part and relationship are not added: fill a [`crate::PackageTemplate`] for that.
     pub fn render_with(&self, data: &Value, hooks: &mut dyn FillHooks) -> String {
-        let mut state = FillState { next_drawing_id: self.max_drawing_id + 1, body: None, container_fill: crate::CONTAINER_FILL, next_footnote_id: 1, next_comment_id: 0, next_bookmark_id: self.max_bookmark_id + 1 };
+        let mut state = FillState { next_drawing_id: self.max_drawing_id + 1, body: None, container_fill: crate::CONTAINER_FILL, next_footnote_id: 1, next_comment_id: 0, next_bookmark_id: self.max_bookmark_id + 1, main_part: crate::DOCUMENT_PART.to_string() };
         let filled = self.fill(data, "", hooks, &mut state);
         // Only a package prints subtemplates.
         let xml = if filled.includes.is_empty() {
@@ -207,7 +209,7 @@ impl<'a> Render<'a, '_> {
                 BlockKind::Segment { .. } => {}
                 BlockKind::Section { name, tag } => {
                     // Sections belong to the body; elsewhere the paragraph goes.
-                    let Some(value) = look_up(scopes, name).filter(|_| self.part == crate::DOCUMENT_PART) else { continue };
+                    let Some(value) = look_up(scopes, name).filter(|_| self.part == self.state.main_part) else { continue };
                     self.out.push(SECTION_START);
                     self.out.push_str(&self.sections.len().to_string());
                     self.out.push(SECTION_END);
@@ -515,7 +517,7 @@ impl<'a> Render<'a, '_> {
         let Some(text) = value.filter(|value| is_truthy(value)).map(print_value) else { return };
         let Some(props) = run_props else { return };
         // Footnotes belong to the body; a single part filled alone counts as one.
-        if !(self.part.is_empty() || self.part == crate::DOCUMENT_PART) {
+        if !(self.part.is_empty() || self.part == self.state.main_part) {
             return;
         }
         let id = self.state.next_footnote_id;
@@ -526,7 +528,7 @@ impl<'a> Render<'a, '_> {
 
     /// The value's text marked with its comments, in the body; elsewhere the text alone.
     fn print_commented(&mut self, text: &str, comments: Vec<Comment>, run_props: Option<&str>) {
-        let is_body = self.part.is_empty() || self.part == crate::DOCUMENT_PART;
+        let is_body = self.part.is_empty() || self.part == self.state.main_part;
         let Some(props) = run_props.filter(|_| is_body) else {
             self.print_text(text, run_props);
             return;
