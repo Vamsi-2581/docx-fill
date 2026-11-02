@@ -2,7 +2,10 @@
 
 use std::ops::Range;
 
+use std::collections::BTreeMap;
+
 use crate::comments::CommentDefaults;
+use crate::expressions::Expression;
 use crate::sections::SectionTag;
 use crate::styling::StyleKind;
 use crate::table_merge::{Merge, read_merge};
@@ -160,6 +163,8 @@ pub struct Template {
     pub(crate) drop_style_paragraphs: bool,
     /// With comments on, the comment author and date a value gives none of.
     pub(crate) comment_defaults: Option<CommentDefaults>,
+    /// Tag names read as expressions, with expressions on.
+    pub(crate) expressions: BTreeMap<String, Expression>,
     /// The largest drawing id the part uses, so new drawings take ids after it.
     pub(crate) max_drawing_id: u32,
     /// The largest bookmark id the part uses, so continuation bookmarks take ids after it.
@@ -195,6 +200,38 @@ pub(crate) enum TextLayout {
 
 /// A paragraph's start token and, once it closes, its end token.
 type ParagraphTokens = (usize, Option<usize>);
+
+impl TagKind {
+    /// Whether the tag reads a value by its name.
+    fn reads_value(&self) -> bool {
+        match self {
+            TagKind::Close | TagKind::StyleEnd | TagKind::TableMerge(_) | TagKind::SegmentOpen { .. } | TagKind::Module(_) => false,
+            TagKind::IncludeSegment { is_dynamic, .. } => *is_dynamic,
+            _ => true,
+        }
+    }
+
+    /// Whether printing the tag's own position uses its value. A loop's or block's tags do not,
+    /// as their blocks read it.
+    pub(crate) fn prints_value(&self) -> bool {
+        !matches!(self, TagKind::Raw | TagKind::RawRun | TagKind::Open { .. } | TagKind::Close | TagKind::FullTable | TagKind::GridOpen | TagKind::Include | TagKind::SegmentOpen { .. } | TagKind::IncludeSegment { .. } | TagKind::Section(_) | TagKind::StyleEnd | TagKind::TableMerge(_))
+    }
+}
+
+/// Each name a value tag reads, parsed, with expressions on.
+fn parse_expressions(tags: &[Tag], options: &FillOptions) -> Result<BTreeMap<String, Expression>, FillError> {
+    let mut expressions = BTreeMap::new();
+    if !options.expressions {
+        return Ok(expressions);
+    }
+    for tag in tags.iter().filter(|tag| tag.kind.reads_value()) {
+        if !expressions.contains_key(&tag.name) {
+            let expression = Expression::parse(&tag.name, &options.filters).map_err(|reason| FillError::new(format!("The tag \"{}\" is not a valid expression: {reason}", tag.name)))?;
+            expressions.insert(tag.name.clone(), expression);
+        }
+    }
+    Ok(expressions)
+}
 
 impl Template {
     /// Parses `xml`, a body, header or footer using `{ }` delimiters.
@@ -278,8 +315,10 @@ impl Template {
 
         let blocks = pair_blocks(&parts, &tags, &paragraphs, options)?;
         let has_cell_loops = blocks.iter().any(|block| matches!(&tags[block.open_tag].kind, TagKind::Open { element: Some(element), .. } if element == CELL));
+        let expressions = parse_expressions(&tags, options)?;
         let mut template = Template {
             has_cell_loops,
+            expressions,
             max_drawing_id: crate::images::read_max_drawing_id(xml),
             max_bookmark_id: crate::footnotes::read_max_element_id(xml, "w:bookmarkStart"),
             continued_bookmarks: options.continued_bookmarks.clone(),
@@ -547,11 +586,11 @@ fn read_tag(text: &str, options: &FillOptions) -> (TagKind, String) {
         Some(b'^') => (TagKind::Open { is_inverted: true, element: None }, rest),
         Some(b'/') => (TagKind::Close, rest),
         Some(b'@') => (TagKind::Raw, rest),
-        // `-w:tr rows`: the element, then the name.
-        Some(b'-') => {
-            let (element, name) = rest.split_once(char::is_whitespace).unwrap_or((&rest, ""));
-            (TagKind::Open { is_inverted: false, element: Some(element.to_string()) }, name.trim_start().to_string())
-        }
+        // `-w:tr rows`: the element, then the name. Without both, `-a` is a plain name.
+        Some(b'-') => match rest.split_once(char::is_whitespace) {
+            Some((element, name)) if !element.is_empty() => (TagKind::Open { is_inverted: false, element: Some(element.to_string()) }, name.trim_start().to_string()),
+            _ => (TagKind::Value, text.to_string()),
+        },
         _ => (TagKind::Value, text.to_string()),
     }
 }

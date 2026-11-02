@@ -66,8 +66,26 @@ A style value looks like this. `fontSize` is in half-points.
 | `comments` | Default author and date for comments |
 | `continued_bookmarks` | Bookmark prefix for tag marks: rich text numbers later paragraphs' bookmarks, and loops keep these names |
 | `document` | Read-only or password protection, a text watermark, page margins and proofing language |
+| `expressions`, `filters` | Reads tag names as expressions, and names the filters they can use. See below. |
 
 Always on: a table whose rows a loop removed goes, cells, headers, footers and text boxes keep the empty paragraph the spec requires, and ids a loop copies are renumbered.
+
+## Expressions
+
+With `FillOptions::expressions` on, a tag's name is an expression, as in docxtemplater's expression parser. It works in every tag that reads a value.
+
+| Tag | Does |
+|---|---|
+| `{user.name}`, `{users[0].name}`, `{users.length}` | Reads properties, indexes and lengths |
+| `{price * 1.2}`, `{first + ' ' + last}` | Does arithmetic with `+ - * / %` |
+| `{#items.length > 1}` … `{/}` | Compares with `== != === !== < > <= >=` |
+| `{a && b}`, `{a \|\| b}`, `{!a}`, `{a ? b : c}` | Logic and a ternary |
+| `{#items}{$index + 1}. {.}{/items}` | The loop's index, and the current item as `.` or `this` |
+| `{name \| upper}`, `{price \| round:2}` | Applies a filter |
+
+A filter is named in `FillOptions::filters` and applied by `FillHooks::filter`. A name is looked up from the innermost scope out, and a missing result is tried again from the parent scope.
+
+A syntax error or unknown filter is an error when parsing. Names such as `table:abc.value` are not expressions, so turn this on per template. Assignments (`{a = 1}`) are refused, and calls give nothing, as JSON holds no functions.
 
 ## Text edits
 

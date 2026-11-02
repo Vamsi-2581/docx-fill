@@ -8,8 +8,9 @@
 //! - `{@name}` replaces its paragraph with the value as raw XML.
 //!
 //! Names are looked up whole (`table:abc.value` is one key), from the innermost loop item out to
-//! the root. Tags are found in each paragraph's `<w:t>` text joined, since Word splits a tag
-//! across runs; a tag's value prints in the run its `{` is in, keeping that run's formatting.
+//! the root, or read as expressions with [`FillOptions::expressions`]. Tags are found in each
+//! paragraph's `<w:t>` text joined, since Word splits a tag across runs; a tag's value prints in the
+//! run its `{` is in, keeping that run's formatting.
 //!
 //! Built from the WordprocessingML spec and docxtemplater's documented behaviour.
 
@@ -17,6 +18,7 @@ mod cell_styling;
 mod comments;
 mod document_edits;
 mod empty_last_page;
+mod expressions;
 mod footnotes;
 mod full_table;
 mod images;
@@ -202,6 +204,13 @@ pub struct FillOptions {
     pub continued_bookmarks: Option<String>,
     /// Fills tags in the core, app and custom document properties, such as the title.
     pub fill_properties: bool,
+    /// Reads tag names as expressions: `{user.name}`, `{items.length > 1}`, `{price * 1.2}`,
+    /// `{name | upper}`, `{$index + 1}`. Names such as `table:abc.value` are then errors, and keys
+    /// holding dots are not found. Off, a name is looked up whole.
+    pub expressions: bool,
+    /// The filters expressions can use, which [`FillHooks::filter`] applies. Any other is an error
+    /// when parsing.
+    pub filters: Vec<String>,
 }
 
 impl Default for FillOptions {
@@ -221,6 +230,8 @@ impl Default for FillOptions {
             comments: CommentDefaults::default(),
             continued_bookmarks: None,
             fill_properties: true,
+            expressions: false,
+            filters: Vec::new(),
         }
     }
 }
