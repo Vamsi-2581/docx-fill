@@ -184,6 +184,15 @@ struct Paragraph {
     end: usize,
 }
 
+/// Where a part's text sits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TextLayout {
+    /// In `<w:t>` elements of `<w:p>` paragraphs.
+    Paragraphs,
+    /// In any element, each text its own paragraph, as in `docProps/core.xml`.
+    Plain,
+}
+
 /// A paragraph's start token and, once it closes, its end token.
 type ParagraphTokens = (usize, Option<usize>);
 
@@ -193,8 +202,12 @@ impl Template {
     /// @returns An error for an unclosed or unopened tag or loop, a loop closed by another loop's
     ///   tag, or a dash loop outside the element it names.
     pub fn parse(xml: &str, options: &FillOptions) -> Result<Template, FillError> {
+        Template::parse_text(xml, options, TextLayout::Paragraphs)
+    }
+
+    pub(crate) fn parse_text(xml: &str, options: &FillOptions, layout: TextLayout) -> Result<Template, FillError> {
         let tokens = tokenize(xml).map_err(FillError::new)?;
-        let (paragraph_tokens, text_tokens) = scan_paragraphs(&tokens);
+        let (paragraph_tokens, text_tokens) = scan_paragraphs(&tokens, layout);
 
         // Tags by paragraph, found in its `<w:t>` text joined, since Word splits a tag across runs.
         let mut found = Vec::with_capacity(text_tokens.len());
@@ -275,7 +288,7 @@ impl Template {
             tags,
             blocks,
             top: Vec::new(),
-            linebreaks: options.linebreaks,
+            linebreaks: options.linebreaks && layout == TextLayout::Paragraphs,
             html_extras: options.extensions.html_extras,
             drop_style_paragraphs: options.drop_style_paragraphs,
             comment_defaults: options.extensions.comments.then(|| options.comments.clone()),
@@ -346,13 +359,17 @@ impl Builder {
 }
 
 /// Each innermost paragraph's start and end token, and its `<w:t>` text tokens.
-fn scan_paragraphs(tokens: &[Token]) -> (Vec<ParagraphTokens>, Vec<Vec<usize>>) {
+fn scan_paragraphs(tokens: &[Token], layout: TextLayout) -> (Vec<ParagraphTokens>, Vec<Vec<usize>>) {
     let mut paragraphs = Vec::new();
     let mut texts: Vec<Vec<usize>> = Vec::new();
     let mut open: Vec<usize> = Vec::new();
     let mut is_in_text = false;
     for (index, token) in tokens.iter().enumerate() {
         match *token {
+            Token::Text(_) if layout == TextLayout::Plain => {
+                paragraphs.push((index, Some(index)));
+                texts.push(vec![index]);
+            }
             Token::Element { kind: ElementKind::Open, name: PARAGRAPH, .. } => {
                 open.push(paragraphs.len());
                 paragraphs.push((index, None));

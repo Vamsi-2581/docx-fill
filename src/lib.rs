@@ -22,6 +22,7 @@ mod full_table;
 mod images;
 mod includes;
 mod json;
+mod part_kinds;
 mod properties;
 mod sections;
 mod protection;
@@ -54,7 +55,9 @@ pub use template::Template;
 pub use text::{CommentedText, FilledDocument, TextPosition, TextRange};
 
 use images::MediaUse;
+use part_kinds::{PartKind, PartKinds};
 use render::FillState;
+use template::TextLayout;
 
 pub(crate) const DOCUMENT_PART: &str = "word/document.xml";
 pub(crate) const STYLES_PART: &str = "word/styles.xml";
@@ -197,6 +200,8 @@ pub struct FillOptions {
     /// paragraph gets its own bookmark `tag_3_1`, `tag_3_2`, …, so a reader can find them all.
     /// A loop's repeats of these bookmarks keep their names; only their ids change.
     pub continued_bookmarks: Option<String>,
+    /// Fills tags in the core, app and custom document properties, such as the title.
+    pub fill_properties: bool,
 }
 
 impl Default for FillOptions {
@@ -215,6 +220,7 @@ impl Default for FillOptions {
             drop_style_paragraphs: false,
             comments: CommentDefaults::default(),
             continued_bookmarks: None,
+            fill_properties: true,
         }
     }
 }
@@ -270,6 +276,8 @@ pub fn fill_part(xml: &str, data: &Value, options: &FillOptions) -> Result<Strin
 #[derive(Debug)]
 pub struct PackageTemplate {
     parts: Vec<(String, PackagePart)>,
+    /// The main document part, `word/document.xml` unless the content types name another.
+    main_part: String,
     drop_empty_last_page: bool,
     document: DocumentEdits,
     max_drawing_id: u32,
@@ -288,22 +296,40 @@ enum PackagePart {
 }
 
 impl PackageTemplate {
-    /// Parses the body, headers and footers among `parts`, given by name without a leading `/`.
+    /// Parses the template parts among `parts`, given by name without a leading `/`: the main
+    /// document, headers, footers, footnotes and comments by their content types, and with
+    /// [`FillOptions::fill_properties`] the core, app and custom document properties.
     pub fn parse(parts: impl IntoIterator<Item = (String, Vec<u8>)>, options: &FillOptions) -> Result<PackageTemplate, FillError> {
         options.document.check()?;
+        let parts: Vec<(String, Vec<u8>)> = parts.into_iter().collect();
+        let content_types = parts.iter().find(|(name, _)| name == CONTENT_TYPES_PART).map(|(_, bytes)| String::from_utf8_lossy(bytes));
+        let kinds = PartKinds::read(content_types.as_deref());
+        let main_part = parts.iter().map(|(name, _)| name).find(|name| kinds.kind(name) == PartKind::Main).cloned().unwrap_or_else(|| DOCUMENT_PART.to_string());
+        let mut max_footnote_id = None;
+        let mut max_comment_id = None;
         let mut parsed = Vec::new();
         for (name, bytes) in parts {
-            if !is_template_part(&name) {
-                parsed.push((name, PackagePart::Bytes(bytes)));
-                continue;
+            if name == footnotes::FOOTNOTES_PART {
+                max_footnote_id = Some(footnotes::read_max_id(&String::from_utf8_lossy(&bytes)));
             }
+            if name == comments::COMMENTS_PART {
+                max_comment_id = Some(comments::read_max_id(&String::from_utf8_lossy(&bytes)));
+            }
+            let layout = match kinds.kind(&name) {
+                PartKind::Main | PartKind::Story => TextLayout::Paragraphs,
+                PartKind::Properties if options.fill_properties => TextLayout::Plain,
+                PartKind::Properties | PartKind::Other => {
+                    parsed.push((name, PackagePart::Bytes(bytes)));
+                    continue;
+                }
+            };
 
             let in_part = |mut error: FillError| {
                 error.part = Some(name.clone());
                 error
             };
             let xml = String::from_utf8(bytes).map_err(|_| in_part(FillError::new("The part is not UTF-8")))?;
-            let template = Template::parse(&xml, options).map_err(in_part)?;
+            let template = Template::parse_text(&xml, options, layout).map_err(in_part)?;
             parsed.push((name, PackagePart::Template(Box::new(template))));
         }
 
@@ -313,16 +339,9 @@ impl PackageTemplate {
         });
         let max_drawing_id = templates().map(|(_, template)| template.max_drawing_id).max().unwrap_or(0);
         let max_bookmark_id = templates().map(|(_, template)| template.max_bookmark_id).max().unwrap_or(0);
-        let body = templates().find(|(name, _)| *name == DOCUMENT_PART).and_then(|(_, template)| template.body);
-        let max_footnote_id = parsed.iter().find_map(|(name, part)| match part {
-            PackagePart::Bytes(bytes) if name == footnotes::FOOTNOTES_PART => Some(footnotes::read_max_id(&String::from_utf8_lossy(bytes))),
-            _ => None,
-        });
-        let max_comment_id = parsed.iter().find_map(|(name, part)| match part {
-            PackagePart::Bytes(bytes) if name == comments::COMMENTS_PART => Some(comments::read_max_id(&String::from_utf8_lossy(bytes))),
-            _ => None,
-        });
+        let body = templates().find(|(name, _)| **name == main_part).and_then(|(_, template)| template.body);
         Ok(PackageTemplate {
+            main_part,
             max_comment_id,
             drop_empty_last_page: options.drop_empty_last_page,
             document: options.document.clone(),
@@ -357,6 +376,7 @@ impl PackageTemplate {
             next_footnote_id: self.max_footnote_id + 1,
             next_comment_id: self.max_comment_id.map_or(0, |id| id + 1),
             next_bookmark_id: self.max_bookmark_id + 1,
+            main_part: self.main_part.clone(),
         };
         let mut comments = Vec::new();
         let mut out: Vec<(String, Cow<[u8]>)> = Vec::with_capacity(self.parts.len());
@@ -372,7 +392,7 @@ impl PackageTemplate {
                 PackagePart::Template(template) => {
                     let filled = template.fill(data, name, hooks, &mut state);
                     media.extend(filled.media.into_iter().map(|used| (name.clone(), used)));
-                    if name == DOCUMENT_PART {
+                    if *name == self.main_part {
                         notes = filled.footnotes;
                         comments = filled.comments;
                         sections = filled.sections;
@@ -396,26 +416,27 @@ impl PackageTemplate {
         comments::add_comments(&mut out, &comments);
         let count = includes::print_includes(&mut out, &includes, &self.includes, hooks);
         sections::apply_sections(&mut out, &sections, &self.includes, hooks, count);
-        finish_template_parts(&mut out, self.drop_empty_last_page, self.kept_bookmarks.as_deref());
+        self.finish_template_parts(&mut out);
         self.document.apply(&mut out);
         out
     }
-}
 
-/// Renumbers repeated ids and repairs each template part's structure, now that subtemplates have
-/// printed, then drops an empty last page from the body.
-fn finish_template_parts(parts: &mut [(String, Cow<[u8]>)], should_drop_last_page: bool, kept_bookmarks: Option<&str>) {
-    for (name, bytes) in parts.iter_mut().filter(|(name, _)| is_template_part(name)) {
-        let Ok(written) = std::str::from_utf8(bytes) else { continue };
-        let mut finished = unique_ids::make_ids_unique(written, kept_bookmarks);
-        if let Some(repaired) = structure::repair_structure(finished.as_deref().unwrap_or(written)) {
-            finished = Some(repaired);
-        }
-        if should_drop_last_page && name == DOCUMENT_PART {
-            finished = Some(drop_empty_last_page(finished.as_deref().unwrap_or(written)));
-        }
-        if let Some(finished) = finished {
-            *bytes = Cow::Owned(finished.into_bytes());
+    /// Renumbers repeated ids and repairs each template part's structure, now that subtemplates
+    /// have printed, then drops an empty last page from the body.
+    fn finish_template_parts(&self, parts: &mut [(String, Cow<[u8]>)]) {
+        let is_template = |name: &str| self.parts.iter().any(|(each, part)| each == name && matches!(part, PackagePart::Template(_)));
+        for (name, bytes) in parts.iter_mut().filter(|(name, _)| is_template(name)) {
+            let Ok(written) = std::str::from_utf8(bytes) else { continue };
+            let mut finished = unique_ids::make_ids_unique(written, self.kept_bookmarks.as_deref());
+            if let Some(repaired) = structure::repair_structure(finished.as_deref().unwrap_or(written)) {
+                finished = Some(repaired);
+            }
+            if self.drop_empty_last_page && *name == self.main_part {
+                finished = Some(drop_empty_last_page(finished.as_deref().unwrap_or(written)));
+            }
+            if let Some(finished) = finished {
+                *bytes = Cow::Owned(finished.into_bytes());
+            }
         }
     }
 }
