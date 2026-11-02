@@ -128,3 +128,28 @@ fn reads_set_delimiter_tags_with_another_prefix_or_none() {
     let off = FillOptions { change_delimiter_prefix: None, ..FillOptions::default() };
     assert_eq!(fill_set(&paragraph(&["{=[[ ]]=}[[name]]"]), &off).unwrap(), "[[name]]");
 }
+
+#[test]
+fn prints_stray_delimiters_as_text_when_allowed() {
+    let both = FillOptions { allow_unopened_tag: true, allow_unclosed_tag: true, ..FillOptions::default() };
+    let unopened = FillOptions { allow_unopened_tag: true, ..FillOptions::default() };
+    let unclosed = FillOptions { allow_unclosed_tag: true, ..FillOptions::default() };
+    let cases = [
+        ("a} {name}", &unopened, "a} V"),
+        ("{name}} x", &unopened, "V} x"),
+        ("{a {name}", &unclosed, "{a V"),
+        ("x {a", &unclosed, "x {a"),
+        ("{{name} x", &unclosed, "{V x"),
+        ("} {name} {", &both, "} V {"),
+        ("{a {name} c}", &both, "{a V c}"),
+    ];
+    for (template, options, printed) in cases {
+        assert_eq!(fill_set(&paragraph(&[template]), options).unwrap(), printed, "{template}");
+    }
+}
+
+#[test]
+fn keeps_stray_delimiters_errors_by_default() {
+    assert!(fill_set(&paragraph(&["a} {name}"]), &FillOptions { allow_unclosed_tag: true, ..FillOptions::default() }).is_err());
+    assert!(fill_set(&paragraph(&["x {a"]), &FillOptions { allow_unopened_tag: true, ..FillOptions::default() }).is_err());
+}
