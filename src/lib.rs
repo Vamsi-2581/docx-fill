@@ -183,6 +183,11 @@ pub struct FillOptions {
     /// What starts and ends a tag that sets new delimiters for the rest of the part, `=` for
     /// `{=[[ ]]=}`. `None` reads such tags as values.
     pub change_delimiter_prefix: Option<String>,
+    /// A close delimiter with no tag open prints as text instead of being an error.
+    pub allow_unopened_tag: bool,
+    /// An open delimiter never closed, or followed by another, prints as text instead of being
+    /// an error.
+    pub allow_unclosed_tag: bool,
     pub extensions: Extensions,
     /// When filling a package, drops an empty last page from the body (see
     /// [`drop_empty_last_page`]).
@@ -213,6 +218,8 @@ impl Default for FillOptions {
             linebreaks: true,
             delimiters: Delimiters::default(),
             change_delimiter_prefix: Some("=".to_string()),
+            allow_unopened_tag: false,
+            allow_unclosed_tag: false,
             extensions: Extensions::ALL,
             drop_empty_last_page: true,
             module_prefixes: Vec::new(),

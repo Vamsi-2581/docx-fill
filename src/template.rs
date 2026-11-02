@@ -215,7 +215,7 @@ impl Template {
         let mut delimiters = options.delimiters.clone();
         for texts in &text_tokens {
             let joined: String = texts.iter().map(|&i| text_of(&tokens[i])).collect();
-            found.push(find_tags(&joined, &mut delimiters, options.change_delimiter_prefix.as_deref())?);
+            found.push(find_tags(&joined, &mut delimiters, options)?);
             joined_texts.push(joined);
         }
 
@@ -416,7 +416,7 @@ fn preserve_space(raw: &str) -> String {
 }
 
 /// The tags in a paragraph's joined text.
-fn find_tags(text: &str, delimiters: &mut Delimiters, change_prefix: Option<&str>) -> Result<Vec<FoundTag>, FillError> {
+fn find_tags(text: &str, delimiters: &mut Delimiters, options: &FillOptions) -> Result<Vec<FoundTag>, FillError> {
     let mut start = DelimiterForms::new(&delimiters.start);
     let mut end = DelimiterForms::new(&delimiters.end);
     let mut tags: Vec<FoundTag> = Vec::new();
@@ -430,6 +430,11 @@ fn find_tags(text: &str, delimiters: &mut Delimiters, change_prefix: Option<&str
             let closed = match open {
                 // Same start and end (e.g. `%name%`): the next delimiter closes the tag.
                 Some((opened, name)) if identical => Some(FoundTag { start: opened, name: name..at, end: at + length, changes_delimiters: false }),
+                // A stray open delimiter prints as text.
+                Some(_) if options.allow_unclosed_tag => {
+                    open = Some((at, at + length));
+                    None
+                }
                 Some((opened, name)) if name == at => return Err(duplicate_open_tag(text, opened, &end)),
                 Some((opened, _)) => return Err(unclosed_tag(&text[opened..at])),
                 None => {
@@ -441,6 +446,10 @@ fn find_tags(text: &str, delimiters: &mut Delimiters, change_prefix: Option<&str
             closed
         } else if let Some(length) = end.find(rest).filter(|_| !identical) {
             let Some((opened, name)) = open.take() else {
+                if options.allow_unopened_tag {
+                    at += length;
+                    continue;
+                }
                 return Err(unopened_tag(text, &tags, at, length));
             };
             at += length;
@@ -453,7 +462,7 @@ fn find_tags(text: &str, delimiters: &mut Delimiters, change_prefix: Option<&str
         let Some(mut tag) = closed else { continue };
         open = None;
         // `{=[[ ]]=}` sets the delimiters for the rest of the part.
-        if let Some(next) = read_new_delimiters(&unescape(&text[tag.name.clone()]), change_prefix)? {
+        if let Some(next) = read_new_delimiters(&unescape(&text[tag.name.clone()]), options.change_delimiter_prefix.as_deref())? {
             *delimiters = next;
             start = DelimiterForms::new(&delimiters.start);
             end = DelimiterForms::new(&delimiters.end);
@@ -462,8 +471,8 @@ fn find_tags(text: &str, delimiters: &mut Delimiters, change_prefix: Option<&str
         tags.push(tag);
     }
     match open {
-        Some((opened, _)) => Err(unclosed_tag(&text[opened..])),
-        None => Ok(tags),
+        Some((opened, _)) if !options.allow_unclosed_tag => Err(unclosed_tag(&text[opened..])),
+        _ => Ok(tags),
     }
 }
 
