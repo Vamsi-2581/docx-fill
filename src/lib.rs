@@ -29,6 +29,7 @@ mod render;
 mod rich_text;
 mod structure;
 mod styling;
+mod table_grid;
 mod table_merge;
 mod template;
 mod text;

@@ -151,6 +151,8 @@ pub struct Template {
     pub(crate) parts: Vec<Part>,
     pub(crate) tags: Vec<Tag>,
     pub(crate) blocks: Vec<Block>,
+    /// Whether a loop repeats cells, which changes how many columns a table needs.
+    pub(crate) has_cell_loops: bool,
     /// Blocks not inside another, in document order.
     pub(crate) top: Vec<usize>,
     pub(crate) linebreaks: bool,
@@ -259,7 +261,9 @@ impl Template {
         }
 
         let blocks = pair_blocks(&parts, &tags, &paragraphs, options)?;
+        let has_cell_loops = blocks.iter().any(|block| matches!(&tags[block.open_tag].kind, TagKind::Open { element: Some(element), .. } if element == CELL));
         let mut template = Template {
+            has_cell_loops,
             max_drawing_id: crate::images::read_max_drawing_id(xml),
             max_bookmark_id: crate::footnotes::read_max_element_id(xml, "w:bookmarkStart"),
             continued_bookmarks: options.continued_bookmarks.clone(),
