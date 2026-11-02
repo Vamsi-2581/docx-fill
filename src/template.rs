@@ -1,10 +1,12 @@
 //! Parses a part into XML, text and tags, and pairs its loops with the XML they repeat.
 
+use std::ops::Range;
+
 use crate::comments::CommentDefaults;
 use crate::sections::SectionTag;
 use crate::styling::StyleKind;
 use crate::table_merge::{Merge, read_merge};
-use crate::xml::{ElementKind, Token, read_attribute, tokenize, unescape};
+use crate::xml::{ElementKind, Token, escape, read_attribute, tokenize, unescape};
 use crate::{Delimiters, Extensions, FillError, FillOptions};
 
 const PARAGRAPH: &str = "w:p";
@@ -156,10 +158,11 @@ pub struct Template {
     pub(crate) body: Option<(f64, f64)>,
 }
 
-/// A tag found in a paragraph's joined text: byte offsets of its opening delimiter and after its
-/// closing one.
+/// A tag found in a paragraph's joined text: byte offsets of its opening delimiter, its name, and
+/// after its closing delimiter.
 struct FoundTag {
     start: usize,
+    name: Range<usize>,
     end: usize,
 }
 
@@ -313,7 +316,7 @@ impl Builder {
                 self.parts.push(Part::Text(joined[cursor..tag.start].to_string()));
             }
             if tag.start >= offset {
-                let written = &joined[tag.start + options.delimiters.start.len()..tag.end - options.delimiters.end.len()];
+                let written = &joined[tag.name.clone()];
                 let (kind, name) = read_tag(&unescape(written), options);
                 self.tags.push(Tag { kind, name, text: written.to_string(), part: self.parts.len(), paragraph, is_alone: false, run_props: None });
                 self.parts.push(Part::Tag(self.tags.len() - 1));
@@ -381,46 +384,87 @@ fn preserve_space(raw: &str) -> String {
 
 /// The tags in a paragraph's joined text.
 fn find_tags(text: &str, delimiters: &Delimiters) -> Result<Vec<FoundTag>, FillError> {
-    let (start, end) = (delimiters.start.as_str(), delimiters.end.as_str());
-    let identical = start == end;
-    let mut tags = Vec::new();
-    let mut open = None;
+    let start = DelimiterForms::new(&delimiters.start);
+    let end = DelimiterForms::new(&delimiters.end);
+    let identical = delimiters.start == delimiters.end;
+    let mut tags: Vec<FoundTag> = Vec::new();
+    // The open delimiter's offset and the name's start.
+    let mut open: Option<(usize, usize)> = None;
     let mut at = 0;
     while at < text.len() {
         let rest = &text[at..];
-        if rest.starts_with(start) {
-            if let Some(opened) = open {
+        if let Some(length) = start.find(rest) {
+            match open {
                 // Same start and end (e.g. `%name%`): the next delimiter closes the tag.
-                if identical {
-                    at += start.len();
-                    tags.push(FoundTag { start: opened, end: at });
+                Some((opened, name)) if identical => {
+                    tags.push(FoundTag { start: opened, name: name..at, end: at + length });
                     open = None;
-                } else {
-                    return Err(unclosed_tag(&text[opened..at]));
                 }
-            } else {
-                open = Some(at);
-                at += start.len();
+                Some((opened, name)) if name == at => return Err(duplicate_open_tag(text, opened, &end)),
+                Some((opened, _)) => return Err(unclosed_tag(&text[opened..at])),
+                None => open = Some((at, at + length)),
             }
-        } else if !identical && rest.starts_with(end) {
-            let Some(opened) = open.take() else {
-                let context_start = tags.last().map_or(0, |tag: &FoundTag| tag.end);
-                return Err(FillError::new(format!("The tag beginning with \"{}\" is unopened", unescape(&text[context_start..at]))));
+            at += length;
+        } else if let Some(length) = end.find(rest).filter(|_| !identical) {
+            let Some((opened, name)) = open.take() else {
+                return Err(unopened_tag(text, &tags, at, length));
             };
-            at += end.len();
-            tags.push(FoundTag { start: opened, end: at });
+            tags.push(FoundTag { start: opened, name: name..at, end: at + length });
+            at += length;
         } else {
             at += rest.chars().next().map_or(1, char::len_utf8);
         }
     }
     match open {
-        Some(opened) => Err(unclosed_tag(&text[opened..])),
+        Some((opened, _)) => Err(unclosed_tag(&text[opened..])),
         None => Ok(tags),
+    }
+}
+
+/// A delimiter as it can appear in a part's text: `<<` is `&lt;&lt;`, and `>>` is `&gt;&gt;` or
+/// `>>`.
+struct DelimiterForms {
+    escaped: String,
+    /// Unless it holds `&` or `<`, which XML text never holds raw.
+    raw: Option<String>,
+}
+
+impl DelimiterForms {
+    fn new(delimiter: &str) -> Self {
+        let mut escaped = String::new();
+        escape(delimiter, &mut escaped);
+        let raw = (!delimiter.contains(['&', '<'])).then(|| delimiter.to_string());
+        DelimiterForms { escaped, raw }
+    }
+
+    /// The byte length of the delimiter `text` starts with.
+    fn find(&self, text: &str) -> Option<usize> {
+        std::iter::once(&self.escaped).chain(&self.raw).find(|form| text.starts_with(form.as_str())).map(String::len)
     }
 }
 
 fn unclosed_tag(context: &str) -> FillError {
     FillError::new(format!("The tag beginning with \"{}\" is unclosed", unescape(context)))
+}
+
+/// `{{name}`: a second open delimiter straight after the first.
+fn duplicate_open_tag(text: &str, opened: usize, end: &DelimiterForms) -> FillError {
+    let context_end = (opened..text.len()).find(|&at| end.find(&text[at..]).is_some()).unwrap_or(text.len());
+    FillError::new(format!("The tag beginning with \"{}\" has duplicate open tags", unescape(&text[opened..context_end])))
+}
+
+/// A close delimiter with no tag open. `{name}}`, straight after a tag's close, is a duplicate.
+fn unopened_tag(text: &str, tags: &[FoundTag], at: usize, length: usize) -> FillError {
+    match tags.last() {
+        Some(tag) if tag.end == at => {
+            let context = unescape(&text[tag.name.start..at + length]);
+            FillError::new(format!("The tag ending with \"{context}\" has duplicate close tags"))
+        }
+        last => {
+            let context_start = last.map_or(0, |tag| tag.end);
+            FillError::new(format!("The tag beginning with \"{}\" is unopened", unescape(&text[context_start..at])))
+        }
+    }
 }
 
 /// A tag's kind and the name it looks up.
