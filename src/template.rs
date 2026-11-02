@@ -667,7 +667,11 @@ fn pair_blocks(parts: &[Part], tags: &[Tag], paragraphs: &[Paragraph], options: 
                     blocks.push(expand_segment(tags, paragraphs, opening, index, is_inline)?);
                     continue;
                 }
+                check_cell_loops(parts, tags, opening, index, &options.delimiters)?;
                 blocks.push(expand_loop(parts, tags, paragraphs, opening, index, options)?);
+            }
+            TagKind::Raw if !tag.is_alone => {
+                return Err(FillError::new(format!("The raw tag \"{}\" should be the only text in its paragraph", tag.name)));
             }
             TagKind::Raw | TagKind::RawRun => {
                 let element = if tag.kind == TagKind::Raw { PARAGRAPH } else { RUN };
@@ -884,6 +888,27 @@ fn find_enclosing(parts: &[Part], at: usize, element: &str) -> Option<(usize, us
         }
     }
     None
+}
+
+/// A loop across table cells repeats the row, so no other loop may close before it in its first
+/// cell or open after it in its last: `{#a}1{/a}{#b}` | `2{/b}`.
+fn check_cell_loops(parts: &[Part], tags: &[Tag], opening: usize, closing: usize, delimiters: &Delimiters) -> Result<(), FillError> {
+    let first_cell = find_enclosing(parts, tags[opening].part, CELL);
+    let last_cell = find_enclosing(parts, tags[closing].part, CELL);
+    if first_cell.is_none() || first_cell == last_cell {
+        return Ok(());
+    }
+
+    let is_in = |cell: Option<(usize, usize)>, tag: &Tag| find_enclosing(parts, tag.part, CELL) == cell;
+    let before = tags[..opening].iter().rev().take_while(|tag| is_in(first_cell, tag)).find(|tag| tag.kind == TagKind::Close);
+    let after = tags[closing + 1..].iter().take_while(|tag| is_in(last_cell, tag)).find(|tag| matches!(tag.kind, TagKind::Open { .. }));
+    let Some(other) = before.or(after) else { return Ok(()) };
+
+    let (start, end) = (&delimiters.start, &delimiters.end);
+    let pair = |name: &str| format!("{start}#{name}{end}{start}/{name}{end}");
+    let (loop_name, other_name) = (&tags[opening].name, &other.name);
+    let written = if before.is_some() { pair(other_name) + &pair(loop_name) } else { pair(loop_name) + &pair(other_name) };
+    Err(FillError::new(format!("Unbalanced loop tags {written}: a loop across table cells cannot share its first or last cell with another loop")))
 }
 
 fn not_inside(tag: &Tag, element: &str) -> FillError {

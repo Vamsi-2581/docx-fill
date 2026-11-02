@@ -195,9 +195,10 @@ impl<'a> Render<'a, '_> {
             at = block.end;
 
             match &block.kind {
+                // Only a string is XML; anything else prints nothing.
                 BlockKind::Raw { name } => {
-                    if let Some(value) = look_up(scopes, name) {
-                        self.out.push_str(&print_value(value));
+                    if let Some(Value::String(xml)) = look_up(scopes, name) {
+                        self.out.push_str(xml);
                     }
                 }
                 BlockKind::Segment { .. } => {}
