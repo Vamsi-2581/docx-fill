@@ -1,45 +1,98 @@
 # docx-fill
 
-Fills DOCX templates written in docxtemplater's public tag syntax, with `{ }` delimiters. Pure Rust, no dependencies beyond `serde_json`, so it builds for wasm.
+Fills DOCX templates written in docxtemplater's public tag syntax. Pure Rust, with `serde_json` as its only dependency, so it builds for wasm.
 
-Core: value tags, `{#loop}` / `{^inverted}` sections, dash loops (`{-w:tr rows}`), paragraph loops, raw XML (`{@xml}`), line breaks in values, any delimiters (`[[ ]]`, `{{ }}`), and module tags handed to the caller by prefix. Body, headers and footers are filled.
-
-Extensions, each on or off in `FillOptions::extensions`:
-
-- `{:vt#cols}` … `{:vt/cols}` repeat table cells.
-- `{:stylecell name}`, `{:stylepar name}`, `{:stylerow name}` and `{:stylerun name}` style their cell, paragraph, row or run with a value such as `{ "cellBackground": "#rrggbb", "textColor": "#f00", "textAlign": "center", "pStyle": "Heading1", "fontSize": 24, "fontFamily": "Arial", "bold": true, "italic": false, "underline": true, "borders": { "top": { "val": "single", "sz": 4, "color": "#000" } } }`. `fontSize` is in half-points. `{:stylebullets name}` colours a list paragraph's bullet (`bulletColor`), `{:styleshape name}` a shape's fill and outline (`fillColor`, `strokeColor`), and `{:stylestart name}` … `{:/style}` styles the runs between. `{::stylepar name}` and `{::stylerun name}` restyle the definition of their paragraph's or run's style in `word/styles.xml`; `FillOptions::drop_style_paragraphs` drops the `{::stylepar}` paragraphs.
-- `{:merge-cells-col 1,2}`, `{:merge-cells-col rtl 1,2}` and `{:merge-cells-row 1,-1}` merge neighbouring cells of their table that print the same text.
-- `{?name}` drops its paragraph for an empty value, repeats it per list item, and keeps it otherwise.
-- `{r@name}` replaces its run with raw `<w:r>` XML.
-- `{:footnote name}` adds a footnote, creating `word/footnotes.xml` when needed.
-- `{~~html}` prints HTML (p, br, h1-h6, strong/b, em/i, u, ul, ol, li) as Word paragraphs; `{~html}` prints it inline. With `html_extras`, also links, tables, s/del/ins, sup/sub, mark, code, pre, hr, blockquote, checkboxes, list numbering attributes and inline CSS.
-- `{:table name}` builds a table from data; `{:#grid name}` … `{:/grid}` prints its paragraphs once per item in a grid of cells.
-- `{%image}` and `{%%image}` draw an image a `FillHooks::image` hook supplies, sized to its table cell or the page, adding its media part, relationship and content type. With `centered_images`, `{%%image}` alone in its paragraph centres it.
-- `{:include name}` prints the bodies of subtemplates added with `PackageTemplate::add_include`, as given or filled with the tag's scope. Their styles (the main document's win, or `IncludeStyles::KeepOwn` renames clashes), lists (one the main document has level by level continues there), media, links, footnotes and the parts copied parts relate to, such as a chart's workbook, come along; section properties, comments and endnotes do not. `{:segment name}` … `{:segment/}` defines a segment printed only by `{:includesegment name}` or `{:includesegment* expression}`; `{:inlinesegment}` and `{:includeinlinesegment}` do the same inside a paragraph.
-- `{:subsection name}` starts a section with a subtemplate's headers and footers; `{:replacesection name}` gives them to the tag's section. The styles and lists those headers use come along as for `{:include}`. `{:page props}` sets its orientation, size and margins.
-- A value `{ "text": …, "comment": … }` (or `"comments": [...]`) prints its text with Word comments on it, with `FillOptions::comments` as the default author.
-- An empty last page left by a loop that printed nothing is dropped.
-
-Always on: a table whose rows a loop removed goes, and a cell, header, footer or text box whose content a tag removed keeps an empty paragraph, as the spec requires.
-
-`FillOptions::document` edits the whole package: read-only or password protection (the hash Word checks: legacy key, then SHA-1/256/384/512 with salt and spin count), a text watermark in every header, page margins and the default proofing language.
-
-`FilledDocument` works on a filled package's body text: `search` finds text within a paragraph (`\n` matches a line break, `\t` a tab), `replace` and `replace_all` change it in the run of its first character, `add_comment` puts a Word comment around a found range, and `comments` lists each comment with the text and XML it marks. Positions are a paragraph index and a character offset, not docxtemplater's XML token index.
-
-For callers that pass settings as JSON, such as a wasm build: `FillOptions::read_json` reads every option (camelCase keys, unknown keys refused), `read_include_options` a subtemplate's mode and styles, and `FilledDocument::run_json` a list of text edits.
-
-```rust
-let template = docx_fill::PackageTemplate::parse(parts, &docx_fill::FillOptions::default())?;
-let filled = template.render(&serde_json::json!({ "name": "Value" }));
+```toml
+[dependencies]
+docx-fill = { git = "https://github.com/finwarman/docx-fill", rev = "<commit>" }
 ```
 
-Tests: `cargo test`. To contribute, see [CONTRIBUTING.md](CONTRIBUTING.md).
+```rust
+use docx_fill::{FillOptions, PackageTemplate};
+use serde_json::json;
+
+let template = PackageTemplate::parse(parts, &FillOptions::default())?;
+let filled = template.render(&json!({ "name": "Value" }));
+```
+
+`parts` is the package's `(name, bytes)` pairs. The body, headers and footers are filled; other parts pass through.
+
+## Core tags
+
+| Tag | Does |
+|---|---|
+| `{name}` | Prints a value. `\n` in a value is a line break. |
+| `{#list}` … `{/list}` | Repeats for each item, or once for a truthy value. |
+| `{^list}` … `{/list}` | Prints for an empty or falsy value. |
+| `{-w:tr rows}` … `{/rows}` | Repeats the enclosing element, here a table row. |
+| `{@xml}` | Replaces its paragraph with raw XML. |
+
+A loop whose tags sit alone in their paragraphs repeats whole paragraphs (`paragraph_loop`). Delimiters can be anything, such as `[[ ]]`, `{{ }}` or `<< >>`. Tags starting with a prefix in `module_prefixes` go to the caller's `FillHooks`.
+
+## Extensions
+
+Each is a flag on `FillOptions::extensions`. All are on by default; `Extensions::NONE` turns them off.
+
+| Flag | Tags | Does | docxtemplater module |
+|---|---|---|---|
+| `vertical_tables` | `{:vt#cols}` … `{:vt/cols}` | Repeats table cells | Vertical table |
+| `cell_styling`, `styling` | `{:stylecell}`, `{:stylepar}`, `{:stylerow}`, `{:stylerun}`, `{:stylebullets}`, `{:styleshape}`, `{:stylestart}` … `{:/style}`, `{::stylepar}`, `{::stylerun}` | Styles a cell, paragraph, row, run, bullet, shape or style definition | Styling |
+| `table_merge` | `{:merge-cells-col 1,2}`, `{:merge-cells-row 1,-1}` | Merges neighbouring cells with the same text | Table |
+| `full_tables` | `{:table name}`, `{:#grid name}` … `{:/grid}` | Builds a table from data, or a grid of cells | Table |
+| `paragraph_placeholder` | `{?name}` | Drops, repeats or keeps its paragraph | Paragraph placeholder |
+| `word_run` | `{r@name}` | Replaces its run with raw `<w:r>` XML | Word run |
+| `footnotes` | `{:footnote name}` | Adds a footnote | Footnotes |
+| `rich_text` | `{~~html}`, `{~html}` | Prints HTML as paragraphs, or inline | HTML |
+| `html_extras` | | Adds links, tables, code, quotes, checkboxes and inline CSS to HTML | HTML |
+| `images` | `{%image}`, `{%%image}` | Draws an image from `FillHooks::image`, sized to its cell or page | Image |
+| `centered_images` | `{%%image}` | Centres an image alone in its paragraph | Image |
+| `subtemplates` | `{:include name}`, `{:segment name}`, `{:includesegment name}` | Prints other documents or segments, with their styles, lists, media and links | Subtemplate |
+| `sections` | `{:subsection name}`, `{:replacesection name}`, `{:page props}` | Takes headers and footers from a subtemplate, or sets page size and margins | Subsection |
+| `comments` | `{name}` with `{ "text", "comment" }` | Prints text with Word comments on it | |
+
+A style value looks like this. `fontSize` is in half-points.
+
+```json
+{ "cellBackground": "#rrggbb", "textColor": "#f00", "textAlign": "center", "pStyle": "Heading1",
+  "fontSize": 24, "fontFamily": "Arial", "bold": true, "borders": { "top": { "val": "single", "sz": 4, "color": "#000" } } }
+```
+
+## Other options
+
+| Option | Does |
+|---|---|
+| `drop_empty_last_page` | Drops an empty last page left by a loop that printed nothing |
+| `drop_style_paragraphs` | Drops the paragraphs of `{::stylepar}` tags |
+| `comments` | Default author and date for comments |
+| `continued_bookmarks` | Bookmark prefix for tag marks: rich text numbers later paragraphs' bookmarks, and loops keep these names |
+| `document` | Read-only or password protection, a text watermark, page margins and proofing language |
+
+Always on: a table whose rows a loop removed goes, cells, headers, footers and text boxes keep the empty paragraph the spec requires, and ids a loop copies are renumbered.
+
+## Text edits
+
+`FilledDocument` works on a filled package's body text.
+
+| Method | Does |
+|---|---|
+| `search` | Finds text within a paragraph. `\n` matches a line break, `\t` a tab. |
+| `replace`, `replace_all` | Changes found text in the run of its first character |
+| `add_comment` | Puts a Word comment around a found range |
+| `comments` | Lists each comment with the text and XML it marks |
+
+Positions are a paragraph index and a character offset.
+
+For callers that pass settings as JSON, such as a wasm build, `FillOptions::read_json` reads every option (camelCase keys, unknown keys refused), `read_include_options` a subtemplate's options, and `FilledDocument::run_json` a list of text edits.
+
+## Contributing
+
+Run `cargo test` and `cargo clippy --all-targets -- -D warnings`. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Sources
 
-Behaviour is built from the WordprocessingML spec (ECMA-376), docxtemplater's public tag syntax and documentation, and black-box runs of the MIT-licensed docxtemplater core. Extension tags follow the paid modules' public documentation. No code is taken from docxtemplater, and nothing is tuned against the paid modules' output. Password hash test vectors come from black-box runs of Apache POI; for characters over 0x7F the crate follows the spec's unsigned bytes where POI sign-extends them.
+Behaviour comes from the WordprocessingML spec (ECMA-376), docxtemplater's public tag syntax and documentation, and black-box runs of the MIT-licensed docxtemplater core. Extension tags follow the paid modules' public documentation. No code is taken from docxtemplater, and nothing is tuned against the paid modules' output. Password hash test vectors come from black-box runs of Apache POI; for characters over 0x7F the crate follows the spec's unsigned bytes where POI sign-extends them.
 
-There is no link module: docxtemplater's site has none. HTML `<a>` links cover it.
+There is no link module, since docxtemplater's site has none. HTML `<a>` links cover it.
 
 Not affiliated with docxtemplater.
 
