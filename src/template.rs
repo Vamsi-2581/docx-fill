@@ -9,6 +9,7 @@ use crate::expressions::Expression;
 use crate::sections::SectionTag;
 use crate::styling::StyleKind;
 use crate::table_merge::{Merge, read_merge};
+use crate::tag_list::{TemplateTag, list_tags};
 use crate::xml::{ElementKind, Token, check_balanced, escape, read_attribute, tokenize, unescape};
 use crate::{Delimiters, Extensions, FillError, FillOptions};
 
@@ -235,6 +236,12 @@ fn parse_expressions(tags: &[Tag], options: &FillOptions) -> Result<BTreeMap<Str
 }
 
 impl Template {
+    /// Each tag in document order, closing tags left out. A loop's, grid's or segment's tags are
+    /// its children, so the list follows the shape of the data the template reads.
+    pub fn tags(&self) -> Vec<TemplateTag> {
+        list_tags(self)
+    }
+
     /// Parses `xml`, a body, header or footer using `{ }` delimiters.
     ///
     /// @returns An error for an unclosed or unopened tag or loop, a loop closed by another loop's

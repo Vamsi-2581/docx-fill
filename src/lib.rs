@@ -34,6 +34,7 @@ mod structure;
 mod styling;
 mod table_grid;
 mod table_merge;
+mod tag_list;
 mod template;
 mod text;
 mod unique_ids;
@@ -53,6 +54,7 @@ pub use images::Image;
 pub use includes::{IncludeMode, IncludeStyles, Subtemplate};
 pub use json::read_include_options;
 pub use render::{FillHooks, MissingKind, MissingValue, ModuleTag, NoHooks};
+pub use tag_list::{TagType, TemplateTag};
 pub use template::Template;
 pub use text::{CommentedText, FilledDocument, TextPosition, TextRange};
 
@@ -377,6 +379,14 @@ impl PackageTemplate {
     /// holding it. A later subtemplate with the name replaces it.
     pub fn add_include(&mut self, name: impl Into<String>, include: Subtemplate) {
         self.includes.insert(name.into(), include);
+    }
+
+    /// Each template part's name with its tags, as [`Template::tags`] lists them.
+    pub fn tags(&self) -> Vec<(&str, Vec<TemplateTag>)> {
+        self.parts.iter().filter_map(|(name, part)| match part {
+            PackagePart::Template(template) => Some((name.as_str(), template.tags())),
+            PackagePart::Bytes(_) => None,
+        }).collect()
     }
 
     /// Every part, in the order given, with the template parts filled with `data`.
