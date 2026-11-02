@@ -175,6 +175,8 @@ struct FoundTag {
     start: usize,
     name: Range<usize>,
     end: usize,
+    /// A `{=[[ ]]=}` tag, which prints nothing.
+    changes_delimiters: bool,
 }
 
 struct Paragraph {
@@ -197,9 +199,10 @@ impl Template {
         // Tags by paragraph, found in its `<w:t>` text joined, since Word splits a tag across runs.
         let mut found = Vec::with_capacity(text_tokens.len());
         let mut joined_texts = Vec::with_capacity(text_tokens.len());
+        let mut delimiters = options.delimiters.clone();
         for texts in &text_tokens {
             let joined: String = texts.iter().map(|&i| text_of(&tokens[i])).collect();
-            found.push(find_tags(&joined, &options.delimiters)?);
+            found.push(find_tags(&joined, &mut delimiters, options.change_delimiter_prefix.as_deref())?);
             joined_texts.push(joined);
         }
 
@@ -328,7 +331,7 @@ impl Builder {
             if tag.start > cursor {
                 self.parts.push(Part::Text(joined[cursor..tag.start].to_string()));
             }
-            if tag.start >= offset {
+            if tag.start >= offset && !tag.changes_delimiters {
                 let written = &joined[tag.name.clone()];
                 let (kind, name) = read_tag(&unescape(written), options);
                 self.tags.push(Tag { kind, name, text: written.to_string(), part: self.parts.len(), paragraph, is_alone: false, run_props: None });
@@ -396,42 +399,74 @@ fn preserve_space(raw: &str) -> String {
 }
 
 /// The tags in a paragraph's joined text.
-fn find_tags(text: &str, delimiters: &Delimiters) -> Result<Vec<FoundTag>, FillError> {
-    let start = DelimiterForms::new(&delimiters.start);
-    let end = DelimiterForms::new(&delimiters.end);
-    let identical = delimiters.start == delimiters.end;
+fn find_tags(text: &str, delimiters: &mut Delimiters, change_prefix: Option<&str>) -> Result<Vec<FoundTag>, FillError> {
+    let mut start = DelimiterForms::new(&delimiters.start);
+    let mut end = DelimiterForms::new(&delimiters.end);
     let mut tags: Vec<FoundTag> = Vec::new();
     // The open delimiter's offset and the name's start.
     let mut open: Option<(usize, usize)> = None;
     let mut at = 0;
     while at < text.len() {
+        let identical = delimiters.start == delimiters.end;
         let rest = &text[at..];
-        if let Some(length) = start.find(rest) {
-            match open {
+        let closed = if let Some(length) = start.find(rest) {
+            let closed = match open {
                 // Same start and end (e.g. `%name%`): the next delimiter closes the tag.
-                Some((opened, name)) if identical => {
-                    tags.push(FoundTag { start: opened, name: name..at, end: at + length });
-                    open = None;
-                }
+                Some((opened, name)) if identical => Some(FoundTag { start: opened, name: name..at, end: at + length, changes_delimiters: false }),
                 Some((opened, name)) if name == at => return Err(duplicate_open_tag(text, opened, &end)),
                 Some((opened, _)) => return Err(unclosed_tag(&text[opened..at])),
-                None => open = Some((at, at + length)),
-            }
+                None => {
+                    open = Some((at, at + length));
+                    None
+                }
+            };
             at += length;
+            closed
         } else if let Some(length) = end.find(rest).filter(|_| !identical) {
             let Some((opened, name)) = open.take() else {
                 return Err(unopened_tag(text, &tags, at, length));
             };
-            tags.push(FoundTag { start: opened, name: name..at, end: at + length });
             at += length;
+            Some(FoundTag { start: opened, name: name..at - length, end: at, changes_delimiters: false })
         } else {
             at += rest.chars().next().map_or(1, char::len_utf8);
+            None
+        };
+
+        let Some(mut tag) = closed else { continue };
+        open = None;
+        // `{=[[ ]]=}` sets the delimiters for the rest of the part.
+        if let Some(next) = read_new_delimiters(&unescape(&text[tag.name.clone()]), change_prefix)? {
+            *delimiters = next;
+            start = DelimiterForms::new(&delimiters.start);
+            end = DelimiterForms::new(&delimiters.end);
+            tag.changes_delimiters = true;
         }
+        tags.push(tag);
     }
     match open {
         Some((opened, _)) => Err(unclosed_tag(&text[opened..])),
         None => Ok(tags),
     }
+}
+
+/// The delimiters a `=[[ ]]=` tag sets, for `prefix` `=`. `None` for any other tag.
+///
+/// @returns An error for a tag starting with `prefix` that does not hold two delimiters without
+///   whitespace or `prefix`, ended by `prefix`.
+fn read_new_delimiters(tag: &str, prefix: Option<&str>) -> Result<Option<Delimiters>, FillError> {
+    let Some(prefix) = prefix.filter(|prefix| !prefix.is_empty()) else { return Ok(None) };
+    let Some(rest) = tag.strip_prefix(prefix) else { return Ok(None) };
+
+    let invalid = || FillError::new(format!("New delimiters cannot be parsed from \"{tag}\""));
+    let inner = rest.strip_suffix(prefix).ok_or_else(invalid)?;
+    let (start, end) = inner.split_once(char::is_whitespace).ok_or_else(invalid)?;
+    let end = end.trim_start();
+    let is_valid = |delimiter: &str| !delimiter.is_empty() && !delimiter.contains(char::is_whitespace) && !delimiter.contains(prefix);
+    if !is_valid(start) || !is_valid(end) {
+        return Err(invalid());
+    }
+    Ok(Some(Delimiters { start: start.to_string(), end: end.to_string() }))
 }
 
 /// A delimiter as it can appear in a part's text: `<<` is `&lt;&lt;`, and `>>` is `&gt;&gt;` or

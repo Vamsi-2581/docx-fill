@@ -87,3 +87,44 @@ fn names_a_doubled_open_delimiter_before_non_ascii_text() {
         assert_eq!(error.message, format!("The tag beginning with \"{context}\" has duplicate open tags"));
     }
 }
+
+fn fill_set(body: &str, options: &FillOptions) -> Result<String, String> {
+    fill_part(&document(body), &json!({ "name": "V" }), options).map(|xml| text(&xml)).map_err(|error| error.message)
+}
+
+#[test]
+fn sets_new_delimiters_from_a_set_delimiter_tag() {
+    let options = FillOptions::default();
+    let cases = [
+        ("{=[[ ]]=}[[name]]", "V"),
+        ("{=[[ ]]=}[[name]][[={ }=]]{name}", "VV"),
+        ("{=&lt;% %&gt;=}&lt;%name%&gt;", "V"),
+        ("{=[[ ]]=}{name}[[name]]", "{name}V"),
+    ];
+    for (template, printed) in cases {
+        assert_eq!(fill_set(&paragraph(&[template]), &options).unwrap(), printed, "{template}");
+    }
+}
+
+#[test]
+fn keeps_set_delimiters_into_later_paragraphs() {
+    let body = paragraph(&["{=[[ ]]=}"]) + &paragraph(&["[[name]]"]);
+    assert_eq!(fill_set(&body, &FillOptions::default()).unwrap(), "V");
+}
+
+#[test]
+fn refuses_a_set_delimiter_tag_it_cannot_read() {
+    for template in ["{=[[]]=}", "{=[[ ]] x=}", "{=[[ ]]}", "{= [[ ]] =}", "{=a=b c=}"] {
+        let error = fill_set(&paragraph(&[template]), &FillOptions::default()).unwrap_err();
+        assert!(error.starts_with("New delimiters cannot be parsed"), "{template}: {error}");
+    }
+}
+
+#[test]
+fn reads_set_delimiter_tags_with_another_prefix_or_none() {
+    let dollar = FillOptions { change_delimiter_prefix: Some("$".into()), ..FillOptions::default() };
+    assert_eq!(fill_set(&paragraph(&["{$[[ ]]$}[[name]]"]), &dollar).unwrap(), "V");
+
+    let off = FillOptions { change_delimiter_prefix: None, ..FillOptions::default() };
+    assert_eq!(fill_set(&paragraph(&["{=[[ ]]=}[[name]]"]), &off).unwrap(), "[[name]]");
+}

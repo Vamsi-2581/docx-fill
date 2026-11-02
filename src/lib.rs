@@ -177,6 +177,9 @@ pub struct FillOptions {
     /// A `\n` in a value prints as a line break.
     pub linebreaks: bool,
     pub delimiters: Delimiters,
+    /// What starts and ends a tag that sets new delimiters for the rest of the part, `=` for
+    /// `{=[[ ]]=}`. `None` reads such tags as values.
+    pub change_delimiter_prefix: Option<String>,
     pub extensions: Extensions,
     /// When filling a package, drops an empty last page from the body (see
     /// [`drop_empty_last_page`]).
@@ -204,6 +207,7 @@ impl Default for FillOptions {
             paragraph_loop: true,
             linebreaks: true,
             delimiters: Delimiters::default(),
+            change_delimiter_prefix: Some("=".to_string()),
             extensions: Extensions::ALL,
             drop_empty_last_page: true,
             module_prefixes: Vec::new(),
