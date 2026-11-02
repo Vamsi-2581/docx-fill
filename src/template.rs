@@ -105,7 +105,7 @@ pub(crate) struct Tag {
 
 #[derive(Debug)]
 pub(crate) enum BlockKind {
-    Loop { name: String, is_inverted: bool },
+    Loop { name: String, is_inverted: bool, page_breaks: LoopPageBreaks },
     Raw { name: String },
     /// A paragraph holding `{?name}` tags, printed by their values.
     Placeholder { names: Vec<String> },
@@ -121,6 +121,15 @@ pub(crate) enum BlockKind {
     IncludeSegment { name: String, is_dynamic: bool },
     /// A section tag's paragraph.
     Section { name: String, tag: SectionTag },
+}
+
+/// Page breaks in a paragraph loop's tag paragraphs, which would go with the tags.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct LoopPageBreaks {
+    /// The opening tag's paragraph has one: each item starts with a paragraph holding a break.
+    pub before_each: bool,
+    /// The closing tag's paragraph has one: a break ends the loop's last paragraph.
+    pub after_last: bool,
 }
 
 /// A range of parts a loop or raw tag replaces: `start..end` is printed as `body_start..body_end`
@@ -818,8 +827,15 @@ fn expand_grid(tags: &[Tag], paragraphs: &[Paragraph], opening: usize, closing: 
 fn expand_loop(parts: &[Part], tags: &[Tag], paragraphs: &[Paragraph], opening: usize, closing: usize, options: &FillOptions) -> Result<Block, FillError> {
     let (open, close) = (&tags[opening], &tags[closing]);
     let TagKind::Open { is_inverted, element } = &open.kind else { unreachable!("pairs start at an opening tag") };
-    let kind = BlockKind::Loop { name: open.name.clone(), is_inverted: *is_inverted };
-    let block = |start, end, body_start, body_end| Block { kind, start, end, body_start, body_end, children: Vec::new(), open_tag: opening };
+    let block = |start, end, body_start, body_end, page_breaks| Block {
+        kind: BlockKind::Loop { name: open.name.clone(), is_inverted: *is_inverted, page_breaks },
+        start,
+        end,
+        body_start,
+        body_end,
+        children: Vec::new(),
+        open_tag: opening,
+    };
 
     let element = match element {
         Some(element) => Some(element.clone()),
@@ -828,17 +844,22 @@ fn expand_loop(parts: &[Part], tags: &[Tag], paragraphs: &[Paragraph], opening: 
     if let Some(element) = element {
         let (start, _) = find_enclosing(parts, open.part, &element).ok_or_else(|| not_inside(open, &element))?;
         let (_, end) = find_enclosing(parts, close.part, &element).ok_or_else(|| not_inside(close, &element))?;
-        return Ok(block(start, end + 1, start, end + 1));
+        return Ok(block(start, end + 1, start, end + 1, LoopPageBreaks::default()));
     }
 
     let is_paragraph_loop = options.paragraph_loop && open.paragraph != close.paragraph && open.is_alone && close.is_alone;
     if is_paragraph_loop {
         let (first, last) = (&paragraphs[open.paragraph], &paragraphs[close.paragraph]);
         if first.end > first.start && last.end > last.start {
-            return Ok(block(first.start, last.end + 1, first.end + 1, last.start));
+            let page_breaks = LoopPageBreaks { before_each: has_page_break(&parts[first.start..first.end]), after_last: has_page_break(&parts[last.start..last.end]) };
+            return Ok(block(first.start, last.end + 1, first.end + 1, last.start, page_breaks));
         }
     }
-    Ok(block(open.part, close.part + 1, open.part + 1, close.part))
+    Ok(block(open.part, close.part + 1, open.part + 1, close.part, LoopPageBreaks::default()))
+}
+
+fn has_page_break(parts: &[Part]) -> bool {
+    parts.iter().any(|part| matches!(part, Part::Element { name, raw, .. } if name == "w:br" && read_attribute(raw, "w:type") == Some("page")))
 }
 
 /// Whether a loop's tags sit in different table cells. An error when only one is in a cell.
