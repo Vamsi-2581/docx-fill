@@ -432,11 +432,13 @@ impl<'a> Render<'a, '_> {
                             self.out.push_str(&printed);
                         }
                         TagKind::CellStyle => {
+                            self.print_style_text(value, tag.run_props.as_deref());
                             if let (Some(style), Some(cell)) = (read_style(value), self.cells.last_mut()) {
                                 cell.1 = Some(style);
                             }
                         }
                         TagKind::Style(StyleTarget::Range) => {
+                            self.print_style_text(value, tag.run_props.as_deref());
                             self.out.push(RANGE_START);
                             self.out.push_str(&self.ranges.len().to_string());
                             self.out.push(RANGE_START_END);
@@ -448,6 +450,7 @@ impl<'a> Render<'a, '_> {
                             }
                         }
                         TagKind::Style(target) => {
+                            self.print_style_text(value, tag.run_props.as_deref());
                             let frame = match target {
                                 StyleTarget::Paragraph => self.paragraphs.last_mut().map(|frame| &mut frame.style),
                                 StyleTarget::Row => self.rows.last_mut().map(|frame| &mut frame.1),
@@ -459,7 +462,10 @@ impl<'a> Render<'a, '_> {
                                 *frame = Some(frame.take().unwrap_or_default().and(style));
                             }
                         }
-                        TagKind::GlobalStyle(kind) => self.restyle_definition(kind, read_style(value)),
+                        TagKind::GlobalStyle(kind) => {
+                            self.print_style_text(value, tag.run_props.as_deref());
+                            self.restyle_definition(kind, read_style(value));
+                        }
                         TagKind::TableMerge(ref merge) => {
                             if let Some(table) = self.tables.last_mut() {
                                 table.1.push(merge.clone());
@@ -491,6 +497,12 @@ impl<'a> Render<'a, '_> {
                     }
                 }
             }
+        }
+    }
+
+    fn print_style_text(&mut self, value: Option<&Value>, run_props: Option<&str>) {
+        if let Some(text) = value.and_then(|value| value.get("text")).and_then(Value::as_str) {
+            self.print_text(text, run_props);
         }
     }
 
