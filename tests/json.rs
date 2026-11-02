@@ -75,3 +75,11 @@ fn runs_text_edits() {
     assert!(document.run_json(&json!([{ "op": "replace", "find": "absent" }])).is_err());
     assert!(document.run_json(&json!([{ "op": "other" }])).is_err());
 }
+
+#[test]
+fn reads_the_change_delimiter_prefix() {
+    let options = docx_fill::FillOptions::default().read_json(&serde_json::json!({ "changeDelimiterPrefix": null })).unwrap();
+    assert_eq!(options.change_delimiter_prefix, None);
+    let options = docx_fill::FillOptions::default().read_json(&serde_json::json!({ "changeDelimiterPrefix": "$" })).unwrap();
+    assert_eq!(options.change_delimiter_prefix.as_deref(), Some("$"));
+}

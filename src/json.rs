@@ -16,6 +16,7 @@ impl FillOptions {
     /// ```json
     /// {
     ///   "paragraphLoop": true, "linebreaks": true, "delimiters": { "start": "{", "end": "}" },
+    ///   "changeDelimiterPrefix": "=" | null,
     ///   "extensions": "all" | false | { "tableMerge": true, "htmlExtras": false, … },
     ///   "dropEmptyLastPage": true, "modulePrefixes": ["$"], "dropStyleParagraphs": false,
     ///   "comments": { "author": "…", "initials": "…", "date": "2026-11-02T09:00:00Z" },
@@ -43,6 +44,7 @@ impl FillOptions {
                     let default = Delimiters::default();
                     self.delimiters = Delimiters { start: read("start")?.unwrap_or(default.start), end: read("end")?.unwrap_or(default.end) };
                 }
+                "changeDelimiterPrefix" => self.change_delimiter_prefix = if value.is_null() { None } else { Some(read_string(value, key)?) },
                 "extensions" => self.extensions = read_extensions(value, self.extensions)?,
                 "dropEmptyLastPage" => self.drop_empty_last_page = read_bool(value, key)?,
                 "modulePrefixes" => self.module_prefixes = read_array(value, key)?.iter().map(|each| read_string(each, key)).collect::<Result<_, _>>()?,
